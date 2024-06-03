@@ -7,4 +7,4 @@ Mostly, it contains EasyDA (a command-line program for RNAseq analysis) and the 
 
 At some point, EasyDA will be moved to its own repository and this one kept only for work in progress.
 
-All code is released under EU-GPL o(the European GNU Public License)
+All code is released under EU-GPL (the European GNU Public License)
