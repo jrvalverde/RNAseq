@@ -1,0 +1,1654 @@
+# NOTE: requires starting R with
+#	R --max-ppsize=500000
+# to be able to make linear models.
+
+library(caret)
+library(randomForest)
+library(xgboost)
+library(relaimpo)
+library(earth)
+library(Boruta)
+library(rFerns)
+library(randomForest)
+library(DALEX)
+library(vita)
+# the next ones are no longer maintained, do not use
+# library(devtools)
+#    install_github("tomasgreif/woe")
+#    install_github("tomasgreif/riv")
+# library(woe)
+# library(riv)
+
+# create dir to save the results
+dir.create('impgenes', showWarning=FALSE)
+
+# whether we want to test the functions in this file
+test_gene_imp <- TRUE
+
+#
+# Load the data
+#
+file_names <- c("signif_sorted_PFU:_wt_x_pfu000.1.tab",  #coturnix
+				"signif_sorted_PFU:_wt_x_pfu001.0.tab", 
+                "signif_sorted_PFU:_wt_x_pfu010.0.tab", 
+                "signif_sorted_PFU:_wt_x_pfu100.0.tab")
+#gallus
+file_names <- c('signif_sorted_sample:_DF1_x_DF1.I.tab', 
+				'signif_sorted_sample:_DF1_x_DF1.P.tab',
+                'signif_sorted_sample:_DF1_x_DF1.P.I.tab',
+                'signif_sorted_sample:_DF1_x_DF1.PC.tab',
+                'signif_sorted_sample:_DF1_x_DF1.PC.I.tab')
+
+
+data_list <- list()
+
+for (file in file_names) {
+  file_data <- read.table(file, header=TRUE)
+  data <-  data.frame(gene = rownames(file_data), l2fc=file_data$log2FoldChange)
+
+  #name <- sub(".*_wt", "wt", file)
+  #name <- sub(".tab", "_l2fc", name)
+  name <- sub(".*_DF1_", "DF1_", file)
+  name <- sub(".tab", "_l2fc", name)
+  colnames(data) <- c("gene", name)
+  data_list[[file]] <- data
+}
+
+combined_data <- data_list[[1]] 
+for (i in 2:length(data_list)) {
+  combined_data <- merge(combined_data, data_list[[i]], by="gene", all = TRUE)
+  print(head(combined_data))
+}
+
+rownames(combined_data) <- combined_data$rows
+head(combined_data)
+
+#all_log2FC <- write.table (combined_data)
+#write.table(combined_data, file = "all_log2FC.tab", sep = "\t", quote = FALSE, row.names = TRUE)
+
+write.table(combined_data, file = "all_log2FC.txt", 
+		    sep = "\t", 
+            quote = FALSE, 
+            row.names=F, col.names=T)
+
+# Load log2FC of significantly altered genes:
+#df <- read.table("data/coturnix/rnaseq-test/both_ends/DESeq2/signif/all_log2FC_transpose.txt",header=T)
+df <- read.table("all_log2FC.txt", header=T)
+fd <- t(combined_data)
+fd <- t(df)
+fd <- read.table("all_log2FC_transpose.txt",header=T)
+
+### COTURNIX
+# set name of first column
+names(fd)[1] <- 'wt.vs.PFU'
+fd[,1] <- c(0.1, 1.0, 10.0, 100.0)
+# define working data sets
+dat <- fd[ , colSums(is.na(fd))==0]			# drop columns with NAs
+datz <- as.data.frame(rbind(rep(0,dim(dat)[2]),dat))
+
+### GALLUS
+colnames(fd) <- fd[1,]
+fd <- fd[-1,]
+rownames(fd) <- NULL
+
+dat <- fd[ , colSums(is.na(fd))==0]
+datz <- as.data.frame(rbind(rep(0,dim(dat)[2]),dat)) 
+
+col <- c("WT","WT.I", "P", "P.I", "PC", "PC.I")
+datz <- cbind("wt.vs.sample" = col, datz)
+
+write.table(datz, file = "all_log2FC_datz.txt", 
+		    sep = "\t", 
+            quote = FALSE, 
+            row.names=F, col.names=T)
+
+##########################################################################################################
+##########################################################################################################
+##########################################################################################################
+##########################################################################################################
+
+# These are some convenience functions to help with printing messages, loading libraries and plotting
+
+#' myname()
+#'
+#' myname() obtains the name of the function that called it
+#'
+#' This function will return the name of the calling function.
+#' The CALLING function !!!
+#' THE CALLING FUNCTION !!!!!!
+#' It is intended as a way to obtain a function's own name for error
+#' reporting. 
+#  We could do it directly, within a function using 
+#  myname <- deparse(sys.call())
+#  but it would be difficult to understand. Isolating this in a function
+#  call makes it more readable.
+#'
+#' 
+#' @return	the name of the calling function (one up in the call stack)
+#'
+#' @usage	me <- myname()
+#'
+#' @examples
+#'	f <- function() { print(myname()) }
+#'	f()
+#'	##[1] "print(myname())"
+#'	## myname() is being passed to print() as an argument and is thus
+#'	## called by 'print', hence the output
+#'	##
+#'	f <- function() { me <- myname() ; print(me) }
+#'	f()
+#'	##[1] "f()"
+#'	## myname() is called by f() to obtain its own name and then the name
+#'	## is handled to print().
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+myname <- function() { 
+    deparse(sys.calls()[[sys.nframe()-1]]) 
+}
+
+
+#' cat.err()
+#'
+#' err() prints a generic error message using cat()
+#'
+#' @param	abort	(boolean) whether the program should be stopped
+#'			(defaults to FALSE)
+#' @param	...	The message to print and cat options (see cat())
+#'
+#' @return	whatever cat() returns
+#'
+#' @usage	cat.err('some message\n', sep='')
+#'
+#' @examples
+#'		f <- function(x) { if (x < 10) {print(x)} else {cat.err(x, "is too big\n")}}
+#'		f(13)
+#'		##ERROR in  f(13) : 13 is too big
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+cat.err <- function(abort=FALSE, ...) { 
+    # error messages should be always printed
+
+    #caller <- deparse( sys.calls()[[sys.nframe()-1]] )
+    caller <- deparse( sys.call(-1) )
+    cat('ERROR in ', caller, ":", ...)
+    if (abort) {
+        quit(save="no", status=1, runLast=FALSE)
+    }
+}
+
+
+#' cat.warn()
+#'
+#' cat.warn() prints a generic warning message using cat()
+#'
+#' @param	...	The message to print and cat options (see cat())
+#'
+#' @return	whatever cat() returns
+#'
+#' @usage	cat.warn('some message\n', sep='')
+#'
+#' @examples
+#'		f <- function(x) { if (x < 10) {print(x)} else {cat.warn(x, "is too big\n")}}
+#'		f(13)
+#'		##WARNING in  f(13) : 13 is too big
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+cat.warn <- function(...) { 
+    #caller <- deparse( sys.calls()[[sys.nframe()-1]] )
+    #me <- as.list(sys.call())[[1]]
+    #parent <- as.list(sys.call(-1))[[1]]
+    caller <- deparse( sys.call(-1) )
+    cat('WARNING in ', caller, ":", ...)
+}
+
+
+#' cat.info()
+#'
+#' cat.info() prints a generic information message using cat()
+#'
+#' @param	...	The message to print and cat options (see cat())
+#'
+#' @return	whatever cat() returns
+#'
+#' @usage	cat.warn('some message\n', sep='')
+#'
+#' @examples
+#'		f <- function(x) { if (x < 10) {print(x)} else {cat.info(x, "is too big\n")}}
+#'		f(13)
+#'		##INFO  f(13) : 13 is too big
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+
+cat.info <- function(...) { 
+     #caller <- deparse( sys.calls()[[sys.nframe()-1]] )
+     #me <- as.list(sys.call())[[1]]
+     #parent <- as.list(sys.call(-1))[[1]]
+     caller <- deparse( sys.call(-1) )
+     cat('INFO ', caller, ":", ...)
+}
+
+
+# to be used instead of library(): this function ensures
+# that the package is installed if not present in the system
+#' use.package
+#'
+#' checks if a package is installed and loads it, if it is not then it 
+#' will install it and then load it
+#' 
+#' @param	p	a single package name to load
+#'
+#' @param	silent	whether we want messages produced during the load displayed
+#' 
+#' @return	the package is guaranteed to be installed and loaded
+#'
+#' @usage	use.package(p, silent=T)
+#' 
+#' @examples	use.package('stringr')
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+use.package <- function(p, silent = F, VERBOSE = F) {
+    ### NOTE: we should likely try CRAN first, Bioconductor afterwards,
+    ### install.packages offline, devtools::install and install_github
+    ### for now we will kepp it simple
+    if (!is.element(p, installed.packages()[,1])) {
+        # we prefer BiocManager because it can install both Bioconductor
+        # and CRAN packages
+        #
+        #install.packages(p, dep = TRUE)
+        if (!is.element('BiocManager', installed.packages()[,1])) {
+            install.packages('BiocManager', dependencies=TRUE)
+        }
+        BiocManager::install(p, dep = TRUE)
+        
+    }
+    # this will fail for 'banneR' which is neither on CRAN nor on
+    # Bioconductor, so we'll check for it as a special case for now
+    if (p == 'banneR')
+       library(banneR)		# if not available we will do without it
+    if (! VERBOSE)
+        suppressPackageStartupMessages(require(p, character.only = TRUE))
+}
+
+
+
+#' use.packages
+#'
+#' given a vector with one or more package names, it first verifies if all
+#' are installed, if not, then missing packages are installed, and finally
+#' all the packages are loaded
+#' 
+#' @param	p	vector of package names to load
+#' 
+#' @return	the packages are guaranteed to be installed and loaded
+#'
+#' @usage	use.packages(pkgs)
+#' 
+#' @examples	use.packages(c('stringr', 'tidyr'))
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+use.packages <- function(pkgs){
+    new.pkgs <- pkgs[!(pkgs %in% installed.packages()[, "Package"])]
+    if (length(new.pkgs))
+        # if there are uninstalled packages
+        install.packages(new.pkgs, dependencies = TRUE)
+
+    sapply(pkgs, require, character.only = TRUE)
+}
+
+
+#'
+#'
+#'
+#' 
+#' @param
+#' 
+#' @return
+#'
+#' @usage
+#' 
+#' @examples
+#'
+#' @author	(C) JosÃ© R. Valverde, CNB-CSIC, 2019
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+as.png <- function(PLOT=NULL, 
+                   file='out.png', width=1024, height=1024, 
+                   overwrite=TRUE, VERBOSE = T) {
+    if (is.null(file)) {
+        tryCatch(print(PLOT))
+    } else if ( overwrite || ! file.exists(file) ) {
+        if (VERBOSE){
+            cat("as.png(): creating", file, "\n")
+        }
+		tryCatch( {
+                png(file, width=width, height=height)
+                print(PLOT)
+            },
+            finally = dev.off()
+        )
+    }
+    return()
+}
+
+
+       
+{	### XXX JR XXX ###
+
+    # Load log2FC of significantly altered genes:
+    #df <- read.table("data/coturnix/rnaseq-test/both_ends/DESeq2/signif/all_log2FC_transpose.txt",header=T)
+# unused    df <- read.table("all_log2FC.txt",header=T)
+    fd <- read.table("all_log2FC_transpose.txt",header=T)
+    
+    # this ensures that rows get the proper PFU irrespective
+    # of order
+    #	1. remove prefix
+    pfu <- sub("wt.*pfu", "", fd$gene)
+    #	2. remove suffix
+    pfu <- sub("_l2fc", "", pfu)
+    
+    
+    # set name of first column
+    #names(fd)[1] <- 'wt.vs.PFU'
+    #fd[,1] <- c(0.1, 1.0, 10.0, 100.0)
+    
+    # substitute columna1 (file names) by column "$pfu"
+    fd <- cbind(pfu=as.numeric(pfu), fd[ , -1])
+
+    # define working data sets
+    # 1. add a row of all zeros for the wild.type
+    #    (inf.pfu/wt.vs.pfu = 0, l2fc=0 for all genes)
+    dat  <- as.data.frame(rbind(rep(0,dim(fd)[2]), fd))
+    # 2. remove columns with NAs
+    dat.noNA <- dat[ , colSums(is.na(dat))==0]			# remove NAs
+    #
+    datz <- dat.noNA
+    #
+    # we now have
+    #	fd 	-> the log2FC transposed data for infected cells (4x8594)
+    #	dat -> the log2FC transposed data for wt and infected cells (5x8594)
+    #   datz -> the log2FC transposed data for wt and infected cells without NA-containing columns (5x1182)
+}
+# load normalized counts of all genes
+#nc <- read.table(file="normalized_counts.tab", header=T)
+tnc <- t(nc)
+# prepend a column with infection levels
+# upon read columns are not preserved
+#tnc <- cbind(c(rep(0, 3), rep(0.1, 3), rep(1.0,3), rep(10.0,3), rep(100.0,3)), tnc)
+# so we will fix the labels
+pfu <- rownames(tnc)
+pfu <- sub('^X', '', pfu)
+pfu <- sub('pfu.*', '', pfu)
+pfu <- sub('wt.*', '0.0', pfu)
+pfu <- as.numeric(pfu)
+tnc <- cbind(pfu=pfu, tnc)
+tnc <- as.data.frame( tnc )		# just in case
+
+# select only counts of sigfigicantly altered genes:
+sig.tc <- cbind(pfu=tnc[ ,1], tnc[ , colnames(tnc) %in% colnames(dat)] )
+tc <- sig.tc
+nc <- t(tc)
+
+# tc now contains the significant transposed normalized counts	(15x8954)
+# nc contains the significant normalized counts	(15x8954)
+
+# in all, dat, datz, and tc, the 'pfu' column contains the PFUs used to infect the cells, 0 for wt
+
+# Now, proceed with the analysis of variable importance:
+#	we expect to identify the most important genes to "explain" the PFU level (i.e., the
+# genes that are more relevantly associated with the response to different PFU infection
+# levels)
+#
+
+LOAD_LIBRARY=F	# LOAD_LIBRARY is a global to indicate if we want to load libraries ourselves without
+    			# user explicit intervention
+
+
+# 1. random forest
+# Random forest can be very effective to find a set of predictors that best
+# explains the variance in the response variable.
+# library(caret)
+# library(randomForest)
+# This function builds a Random Forest to find the most relevant variables
+#
+# A Random Forest is blah blah blah.
+#
+imp_random_forest <- function(formula, data, verbose=T, ...) {
+    # create a RF model
+    if (verbose) cat.info("building RF model\n")
+    regressor <- randomForest(formula , data=data, importance=TRUE, ...)  # fit the random forest with 
+                                                                     	  # provided parameters (if any)
+    if (verbose) cat.info("calculating importance\n")
+    # get variable importance, based on mean decrease in accuracy using
+    # varImp in the caret package (we indicate it explicitly to avoid name clashes due to masking)
+    if ( T ) {
+        result <- caret::varImp(regressor, conditional=TRUE) 	# conditional=True, adjusts for correlations 
+    													 	    # between predictors
+        return(result)
+    } else {
+        # unused for now, we will activate it eventually and add a function-call argument
+        # to allow choosing
+        varImp::varimpAUC(regressor)    # more robust towards class imbalance, returns a list
+        return(result$importance)
+    }
+}
+
+if (test_gene_imp) { 
+    # dat can have NAs, the others don't
+    dat.i.rf <- imp_random_forest(pfu ~ ., dat, na.action=na.omit)
+    datz.i.rf <- imp_random_forest(pfu ~ ., datz)
+    tc.i.rf <- imp_random_forest(pfu ~ ., tc)
+    
+    # all of these fail because we only have five infection levels
+    #	==> according to Google searches we cannot use RF for regression with <= 5 levels
+    # this means we cannot use regression, and we need to resort to 
+    # classification, treating the infection levels as a factor
+    # (this is, we treat PFU levels as categorical variables, which
+    # implies we will ignore the magnitude of $pfu):
+    #	convert $pfu to factor and try again
+    fdat <- dat ; fdat$pfu = as.factor(fdat$pfu)
+    fdatz <- datz ; fdatz$pfu <- as.factor(fdatz$pfu)
+    ftc <- tc ; ftc$pfu <- as.factor(ftc$pfu)
+    # now do the (categorical) importance calculations
+    dat.i.rf <- imp_random_forest(pfu ~ ., fdat, na.action=na.omit)		# need at least two classes
+    datz.i.rf <- imp_random_forest(pfu ~ ., fdatz)						# 
+    tc.i.rf <- imp_random_forest(pfu ~ ., ftc)							# 
+
+    if (! is.null(dat.i.rf))
+        write.table(dat.i.rf, 'impgenes/imp_rf_dat.txt', row.names=F)
+    if (! is.null(datz.i.rf))
+    	write.table(datz.i.rf, 'impgenes/imp_rf_datz.txt', row.names=F)
+    if (! is.null(tc.i.rf))
+    	write.table(tc.i.rf, 'impgenes/imp_rf_datz.txt', row.names=F)
+}
+
+
+# 2. xgboost
+#library(caret)
+#library(xgboost)
+
+imp_xgboost <- function(formula, data, verbose=T) {
+	if (verbose) cat.info("building xgboost model\n")
+    
+    regressor <- train(formula, data, 
+                       method = "xgbTree", 
+                       trControl = trainControl("cv", number = 10))
+                       # scale=TRUE)
+    if (verbose) cat.info("calculating importance\n")
+    result <- caret::varImp(regressor, conditional=T)
+    return(result)
+}
+
+if (test_gene_imp) {
+    dat.i.xgboost <- imp_xgboost(pfu ~ ., dat)
+    datz.i.xgboost <- imp_xgboost(pfu ~ ., datz)
+    tc.i.xgboost <- imp_xgboost(pfu ~ ., tc)
+    
+    # according to str() we want to save $importance
+    if (! is.null(dat.i.xgboost))
+        write.table(dat.i.xgboost$importance, 'impgenes/imp_xgboost_dat.txt', row.names=F)
+    if (! is.null(datz.i.xgboost))
+    	write.table(datz.i.xgboost$importance, 'impgenes/imp_xgboost_datz.txt', row.names=F)
+    if (! is.null(tc.i.xgboost))
+        write.table(tc.i.xgboost$importance, 'impgenes/imp_xgboost_datz.txt', row.names=F)
+}
+
+
+
+# 3. relimp
+library(relaimpo)
+
+imp_relimp <- function(formula, data, tune=F, verbose=T) {
+    if (verbose) cat.info("building linear model\n")
+    if (tune == F) {
+        # directly build a linear model
+        regressor <- lm(pfu ~ . , data=data) # fit a lm() model
+    else { 
+        # tune with caret
+        control <- trainControl(method="repeatedcv", number=10, repeats=3)
+        tuneGrid <- expand.grid(k=1:3, size=seq(5,20,by=1))
+        regressor <- train(pfu ~ ., data=dat, 
+                           method="lm",  # Use "lm" for linear regression
+                           preProcess="scale", 
+                           trControl=control#,
+                           #tuneGrid=tuneGrid
+                           )
+    }
+    if (verbose) summary(regressor)
+    if (verbose) cat.info("calculating importance\n")
+    relImportance <- calc.relimp(regressor, type = "lmg", rela = TRUE) # calculate relative importance scaled to 100
+
+    return(sort(relImportance$lmg, decreasing=TRUE)) # relative importance
+}
+
+
+if (test_gene_imp) {
+    dat.i.relimp <- imp_relimp(pfu ~ ., dat)
+    datz.i.relimp <- imp_relimp(pfu ~ ., datz)
+    tc.i.relimp <- imp_relimp(pfu ~ ., tc)
+    
+    # according to str() we want to save $importance
+    if (! is.null(dat.i.relimp))
+        write.table(dat.i.relimp$importance, 'impgenes/imp_relimp_dat.txt', row.names=F)
+    if (! is.null(datz.i.relimp))
+    	write.table(datz.i.relimp$importance, 'impgenes/imp_relimp_datz.txt', row.names=F)
+    if (! is.null(tc.i.relimp))
+        write.table(tc.i.relimp$importance, 'impgenes/imp_relimp_datz.txt', row.names=F)
+}
+
+                  
+# 4. MARS (earth package)
+# The earth package implements variable importance based on Generalized cross
+# validation (GCV), number of subset models the variable occurs (nsubsets) and
+# residual sum of squares (RSS).
+library(earth)
+
+imp_mars <- function (formula, data) {
+	if (verbose) cat.info("building MARS model\n")
+    regressor <- earth(formula, data=data) 
+	
+    if (verbose) cat.info("calculating importance\n")
+    ev <- evimp (regressor) # estimate variable importance
+	return(ev)
+}
+
+if (test_gene_imp) {
+    dat.i.mars <- imp_mars(pfu ~ ., data=dat)		# fails because of NAs 	ENSCJPG00005000039
+    datz.i.mars <- imp_mars(pfu ~ ., data=datz)		# same					ENSCJPG00005000039
+    tc.i.mars <- imp_mars(pfu ~ ., data=tc)			# only one important gene: ENSCJPG00005008112
+
+    if (! is.null(dat.i.mars))
+        write.table(dat.i.mars$importance, 'impgenes/imp_mars_dat.txt', row.names=F)
+    if (! is.null(datz.i.mars))
+    	write.table(datz.i.mars$importance, 'impgenes/imp_mars_datz.txt', row.names=F)
+    if (! is.null(tc.i.mars))
+        write.table(tc.i.mars$importance, 'impgenes/imp_mars_datz.txt', row.names=F)
+}
+
+
+
+# 5. Step-wise Regression Method
+# 
+# If you have large number of predictors , split the Data in chunks of 10
+# predictors with each chunk holding the responseVar.
+
+dat.base.mod <- lm(pfu ~ 1 , data=dat) 
+dat.all.mod <- lm(pfu ~ . , data=dat) # full model with all predictors
+
+datz.base.mod <- lm(pfu ~ 1 , data=datz) 
+datz.all.mod <- lm(pfu ~ . , data=datz)
+
+tc.base.mod <- lm(pfu ~ 1 , data=tc) 
+tc.all.mod <- lm(pfu ~ . , data=tc)
+
+stepMod <- step(tc.base.mod, 
+		        scope = list(lower = tc.base.mod, upper = tc.all.mod), 
+                direction = "both", 
+                trace = 1, 
+                steps = 1000) 
+sink('impgenes/imp_stepwise_tc.txt')
+stepMod
+sink()
+
+write.table(stepMod, 'impgenes/imp_stepwise_tc.txt', row.names=F)
+write.table(stepMod$Coefficients, 'impgenes/imp_stepwise_coeffs_tc.txt', row.names=F)
+
+#stepwise function
+imp_stepwise <- function(base_formula, full_formula, data) {
+
+  base.mod <- lm(base_formula, data=data) # base intercept only model
+  all.mod <- lm(full_formula, data=data) # full model with all predictors
+  # Ejecuta el método stepwise
+  stepMod <- step(base.mod, 
+                  scope = list(lower = base.mod, upper = all.mod), 
+                  direction = "both", 
+                  trace = 1, 
+                  steps = 1000) # perform step-wise algorithmshortlistedVars <- names(unlist(stepMod[[1]])) # get the shortlisted variable.shortlistedVars <- shortlistedVars[!shortlistedVars %in% "(Intercept)"] # remove intercept
+
+  return(stepMod)
+}
+
+# Error: data must be a dataframe
+base.mod <- lm(pfu ~ 1 , data=tc)
+all.mod <- lm(pfu ~ . , data=tc)
+
+prueba <- function(formula, data) {
+	all.mod <- lm(formula, data=data)
+	return(all.mod)
+}
+stepwise_prueba <- prueba(pfu ~ 1, data=tc)
+###
+
+if (test_gene_imp) {
+    dat.i.stepwise <- imp_stepwise(pfu ~ 1, pfu ~ ., data=dat)
+    datz.i.stepwise <- imp_stepwise(pfu ~ ., datz)
+    tc.i.stepwise <- imp_stepwise(pfu ~ 1, pfu ~ ., data=tc)
+}
+
+write.table(dat.i.xgboost, 'impgenes/imp_xgboost_dat.txt', row.names=F)
+write.table(datz.i.xgboost, 'impgenes/imp_xgboost_datz.txt', row.names=F)
+write.table(tc.i.xgboost, 'impgenes/imp_xgboost_datz.txt', row.names=F)
+stepwise_result <- perform_stepwise_regression(dat, pfu ~ 1, pfu ~ .)
+
+# The output might include levels within categorical variables, since
+# 'stepwise' is a linear regression based technique.
+# 
+# If you have a large number of predictor variables, the above code may need to
+# be placed in a loop that will run stepwise on sequential chunks of
+# predictors. The shortlisted variables can be accumulated for further analysis
+# towards the end of each iteration. This can be very effective method, if you
+# want to
+# 
+# * Be highly selective about discarding valuable predictor variables. 
+# 
+# * Build multiple models on the response variable.
+
+
+# 6. Boruta Method
+# 
+# The 'Boruta' method can be used to decide if a variable is
+# important or not. It is an algorithm based on RF.
+
+# install.packages('Boruta')
+library(Boruta)
+
+imp_boruta <- function (formula, data, verbose=T){
+	if (verbose) cat("imp_boruta: performing boruta algorithm\n")
+    
+	boruta_output <- Boruta(formula, data, doTrace=2) # perform Boruta search
+	# plot
+    png("impgenes/selected_tc.png", width = 800, height = 600)
+	plot(boruta_output, cex.axis=.7, las=2, xlab="", main="Variable Importance") 
+    dev.off()
+	# get confirmed and tentative factors
+	boruta_signif <- names(boruta_output$finalDecision)[boruta_output$finalDecision 
+										      %in% c("Confirmed", "Tentative")]
+	return(boruta_signif)
+}
+
+if (test_gene_imp) {
+    dat.i.boruta <- imp_boruta(pfu ~ ., data=dat)
+    datz.i.boruta <- imp_boruta(pfu ~ ., datz)
+    tc.i.boruta <- imp_boruta(pfu ~ ., tc)
+}
+
+write.table(dat.i.boruta, 'impgenes/imp_boruta_dat.txt', row.names=F)
+write.table(datz.i.boruta, 'impgenes/imp_boruta_datz.txt', row.names=F)
+write.table(tc.i.boruta, 'impgenes/imp_boruta_tc.txt', row.names=F)
+
+selected_columns_dat <- cbind(pfu=dat[ ,1], dat[, colnames(dat) %in% boruta_signif])
+selected_columns_datz <- cbind(pfu=datz[ ,1], datz[, colnames(datz) %in% boruta_signif])
+selected_columns_tc <- cbind(pfu=tc[ ,1], tc[, colnames(tc) %in% tc.i.boruta])
+
+if (test_gene_imp) {
+    selected.dat.i.boruta <- imp_boruta(pfu ~ ., selected_columns_dat)
+    selected.datz.i.boruta <- imp_boruta(pfu ~ ., selected_columns_datz)
+    selected.tc.i.boruta <- imp_boruta(pfu ~ ., selected_columns_tc)
+}
+
+write.table(selected.dat.i.boruta, 'impgenes/imp_boruta_selected_dat.txt', row.names=F)
+write.table(selected.datz.i.boruta, 'impgenes/imp_boruta_selected_datz.txt', row.names=F)
+write.table(selected.tc.i.boruta, 'impgenes/imp_boruta_selected_tc.txt', row.names=F)
+
+png("impgenes/selected_tc.png", width = 800, height = 600)
+plot(boruta_signif, cex.axis=.7, las=2, xlab="", main="Variable Importance")
+dev.off()
+
+
+# collect Confirmed and Tentative variables
+# for faster calculation(classification only)
+
+#library(rFerns)
+
+boruta.train <- Boruta(factor(pfu)~., data=tc, 
+                       doTrace = 2, 
+                       getImp=getImpFerns, 
+                       holdHistory = F)
+print(boruta.train)
+ 
+boruta_signif <- names(boruta.train$finalDecision[boruta.train$finalDecision %in% c("Confirmed", "Tentative")]) 
+# collect Confirmed and Tentative variables
+print(boruta_signif)
+
+#
+#
+getSelectedAttributes(boruta_signif, withTentative = F)
+boruta.df <- attStats(boruta_signif)
+print(boruta.df)
+
+
+# 7. Information value and Weight of evidence Method
+# 		Use for binary outcomes (try e.g. with 0 vs 100)
+# NO LONGER MAINTAINED
+library(devtools)
+   install_github("tomasgreif/woe")
+   install_github("tomasgreif/riv")
+library(woe)
+library(riv)
+
+iv_df <- iv.mult(dat, y="pfu", summary=TRUE, verbose=TRUE)
+iv <- iv.mult(dat, y="pfu", summary=FALSE, verbose=TRUE)
+iv_dfiv.plot.summary(iv_df) # Plot information value summary
+# Calculate weight of evidence variables
+data_iv <- iv.replace.woe(dat, iv, verbose=TRUE) # add woe variables to original data frame.
+
+# The newly created woe variables can alternatively be in place of the original
+# factor variables.
+# NO LONGER MAINTAINED
+
+
+
+# 
+# 8. Learning Vector Quantization (LVQ) Method for categorical variables
+#
+
+library(caret)
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+# to avoid error 'subscript out of bounds'
+tuneGrid = expand.grid(k=1:3,size=seq(5,20,by=1))
+# train the model
+regressor <- train(pfu ~ ., data=dat, 
+                  method="lvq", 			# error: wrong model for regression
+                  preProcess="scale", 
+                  trControl=control,
+                  tuneGrid=tuneGrid)
+# estimate variable importance
+importance <- varImp(regressor, scale=FALSE)
+
+regressor<- train(pfu ~ ., data=tc, 
+                  method="lvq", 
+                  preProcess="scale", 
+                  trControl=control,
+                  tuneGrid=tuneGrid)
+# estimate variable importance
+importance <- varImp(regressor, scale=FALSE)
+#
+# for tc only one gene is selected
+#	ENSCJPG00005008112
+
+#
+# 9. Recursive Feature Elimination RFE Method
+
+library(caret)
+
+imp_rfe <- function (x, y) {
+
+	control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+    results <- rfe(x, y, sizes=2^(2:8), rfeControl=control)
+	predictors <- predictors(results)
+    
+    return(predictors)
+}
+
+if (test_gene_imp) {
+    dat.i.rfe <- imp_rfe(dat[, -1], dat[, 1])
+    datz.i.rfe <- imp_rfe(datz[, -1], datz[, 1])
+    tc.i.rfe <- imp_rfe(tc[, -1], tc[, 1])
+}
+
+write.table(dat.i.rfe, 'impgenes/imp_rfe_dat.txt')
+write.table(datz.i.rfe, 'impgenes/imp_rfe_datz.txt')
+write.table(tc.i.rfe, 'impgenes/imp_rfe_tc.txt')
+
+# define the control using a random forest selection function
+control <- rfeControl(functions=rfFuncs, method="cv", number=10)
+# run the RFE algorithm
+results <- rfe(dat[,-1], dat[,1], sizes=2^(2:8), rfeControl=control)
+# summarize the results
+# list the chosen features
+predictors(results)
+# plot the results
+plot(results, type=c("g", "o"))
+
+tcresults <- rfe(tc[,-1], tc[,1], sizes=2^(2:8), rfeControl=control)
+predictors(tcresults)
+plot(tcresults)
+
+#
+#
+# 10. DALEX Method
+
+library(randomForest)
+library(DALEX)
+regressor <- randomForest(pfu ~ . , data=dat, importance=TRUE) 
+# fit the random forest with default parameter
+### alternate: make a biomial GLM
+### regressor <- glm(pfu ~ ., data=dat, family="multinomial")
+regressor <- glm(pfu ~ . , data=tc)
+# Variable importance with DALEX
+explained <- explain(regressor, data=tc, y=tc$pfu)
+# Get the variable importances
+#varimps <- variable_dropout(explained, type='raw')
+#print(varimps)
+#plot(varimps)
+imp <- feature_importance(explained, type='raw') #so slowly
+print(imp)
+head(imp)
+head(sort(imp))
+
+write.table (imp, 'impgenes/imp_dalex_tc.txt')
+
+
+#
+# 11. VITA
+
+library(vita)
+
+imp_vita <- function (formula, data, col) {
+	 regressor <- randomForest(formula , data=data, importance=TRUE) 
+	 pimp.varImp.reg <- PIMP(data, data$col, regressor,S =10, parallel=TRUE)
+	 
+     return (pimp.varImp.reg$VarImp)
+}
+
+if (test_gene_imp) {
+    dat.i.vita <- imp_vita(pfu ~ . , data=dat, pfu)
+    datz.i.vita <- imp_vita(pfu ~ . , data=datz, pfu)
+    tc.i.vita <- imp_vita(pfu ~ . , data=tc, pfu)
+}
+
+write.table(dat.i.vita, 'impgenes/imp_vita_dat.txt')
+write.table(datz.i.vita, 'impgenes/imp_vita_datz.txt')
+write.table(tc.i.vita, 'impgenes/imp_vita_tc.txt')
+
+# without function: 
+
+regressor <- randomForest(pfu ~ . , data=dat, importance=TRUE) 
+# fit the random forest with default parameter
+pimp.varImp.reg <- PIMP(dat, dat$pfu, regressor,S =10, parallel=TRUE)
+print(pimp.varImp.reg)
+print(pimp.varImp.reg$VarImp)
+
+pimp.varImp.reg$VarImp
+sort(pimp.varImp.reg$VarImp,decreasing = T)
+
+regressor <- randomForest(pfu ~ . , data=tc, importance=TRUE) 
+pimp.varImp.reg <- PIMP(tc, tc$pfu, regressor,S =10, parallel=TRUE)
+print(pimp.varImp.reg)
+print(pimp.varImp.reg$VarImp)
+
+#
+# 12. Genetic Algorithm
+
+library(caret)
+
+imp_ga <- function (x, y) {
+	# Define control function
+	ga_ctrl <- gafsControl(functions = rfGA,  method = "cv", repeats = 3)
+	# another option is `caretGA`
+	# Genetic Algorithm feature selection
+	ga_obj <- gafs(x,
+ 	              y,
+ 	              iters = 100,  # normally much higher (100+)        
+  	              gafsControl = ga_ctrl)
+                  
+	return(ga_obj)
+}
+
+if (test_gene_imp) {
+    dat.i.ga <- imp_ga(dat[, -1], dat[, 1])
+    datz.i.ga <- imp_ga(datz[, -1], datz[, 1])
+    tc.i.ga <- imp_ga(tc[, -1], tc[, 1])
+}
+
+write.table(dat.i.ga$optVariables, 'impgenes/imp_ga_dat.txt')
+write.table(datz.i.ga$optVariables, 'impgenes/imp_ga_datz.txt')
+write.table(tc.i.ga$optVariables, 'impgenes/imp_ga_tc.txt')
+
+
+#
+# 13. Simulated Annealing
+
+library(caret)
+
+imp_sa <- function (x, y) {
+	sa_ctrl <- safsControl(functions = rfSA,
+                      	   method = "repeatedcv",            
+                       	   repeats = 3,            
+                           improve = 5)
+	
+    set.seed(20240426)
+
+	sa_obj <- safs(x, 
+    			   y,
+                   safsControl = sa_ctrl)
+	
+    return(sa_obj)
+}
+
+if (test_gene_imp) {
+    dat.i.sa <- imp_sa(dat[, -1], dat[, 1])
+    datz.i.sa <- imp_sa(datz[, -1], datz[, 1])
+    tc.i.sa <- imp_sa(tc[, -1], tc[, 1])
+}
+
+write.table(dat.i.sa$optVariables, 'impgenes/imp_sa_dat.txt')
+write.table(datz.i.sa$optVariables, 'impgenes/imp_sa_datz.txt')
+write.table(tc.i.sa$optVariables, 'impgenes/imp_sa_tc.txt')
+
+#
+# 14. Correlation Method
+
+# between genes: 
+
+library(caret)
+# calculate correlation matrix
+correlationMatrix <- cor(dat[,-1])
+# summarize the correlation matrix
+print(correlationMatrix)
+# find attributes that are highly correlated (ideally >0.75)
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.5)
+# print indexes of highly correlated attribute
+print(highlyCorrelated)
+
+# between infection vs each gene:
+
+# Pearson Correlation
+imp_cor <- function (x, y, verbose=T) {
+	
+    if(verbose) cat("imp_cor: calculating correlation between variables\n")
+	
+    data_cor <- cor(x, y)
+	highlyCorrelated <- rownames(data_cor[data_cor[, 1] > 0.8, , drop = FALSE])
+    
+    return(highlyCorrelated)
+}
+
+if (test_gene_imp) { 
+    dat.i.cor <- imp_cor(dat[ , colnames(dat) != "pfu"], dat$pfu)
+    datz.i.cor <- imp_cor(datz[ , colnames(datz) != "pfu"], datz$pfu)
+    tc.i.cor <- imp_cor(tc[ , colnames(tc) != "pfu"], tc$pfu)
+}
+
+write.table(dat.i.cor, 'impgenes/imp_cor_dat.txt', row.names=F)
+write.table(datz.i.cor, 'impgenes/imp_cor_datz.txt', row.names=F)
+write.table(tc.i.cor, 'impgenes/imp_cor_tc.txt', row.names=F)
+
+#
+# 15. Regularized Random Forest (RRF)
+imp_rrf <- function ( formula, data ) {
+	
+    #set.seed(290424)
+    rrfMod <- train(formula, 
+                data = data, 
+                method = "RRF",
+                importance = T) #this argument is required for varImp
+	
+    rrfImp <- caret::varImp(rrfMod, scale=F)
+	
+    return(rrfImp)
+}
+
+if (test_gene_imp) { 
+    #dat.i.rrf <- imp_rrf(pfu ~ . , data=dat)		# ERROR: RMSD values missing
+    #datz.i.rrf <- imp_rrf(pfu ~ . , data=datz)	# same
+    tc.i.rrf <- imp_rrf(pfu ~ . , data=tc)
+}
+
+# when saving the dataset, varImp is not a data.frame so the method 
+# write.table cannot be used, it is important to solve this problem. 
+# According to str() the varImp result is an object with an element called
+# importance, which is a data.frame and contains the relevant details.
+write.table(dat.i.rrf$importance, 'impgenes/imp_rrf_dat.txt', row.names=F)
+write.table(datz.i.rrf$importance, 'impgenes/imp_rrf_datz.txt', row.names=F)
+write.table(tc.i.rrf$importance, 'impgenes/imp_rrf_tc.txt', row.names=F)
+
+sink('impgenes/imp_rrf_tc.txt')
+tc.i.rrf
+sink()
+
+png("impgenes/rrf_tc.png", width = 800, height = 600)
+plot(tc.i.rrf, top = 20, main='Variable Importance')
+dev.off()
+
+# without the function:
+set.seed(290424)
+rrfMod <- train(pfu ~ ., 
+                data = tc, 
+                method = "RRF",
+                importance = T)
+
+rrfImp <- varImp(rrfMod, scale=F)
+rrfImp
+
+sink('impgenes/imp_rrf_tc_3.0.txt')
+tc.i.rrf
+sink()
+
+png("impgenes/rrf_tc_3.0.png", width = 800, height = 600)
+plot(tc.i.rrf, top = 20, main='Variable Importance')
+dev.off()
+
+# error with datz dataset
+rrfMod <- train(pfu ~ ., 
+                data = datz, 
+                method = "RRF",
+                importance = T)
+
+rrfImp <- varImp(rrfMod, scale=F)
+rrfImp
+
+plot(rrfImp, top = 20, main='Variable Importance')
+
+
+#
+# 16. rpart
+library(caret)
+set.seed(290424)
+rPartMod <- train(pfu ~ ., 
+                  data=datz, 
+                  method="rpart",
+                  importance = T)
+# with dat: Something is wrong; all the RMSE metric values are missing
+# with datz: Something is wrong; all the RMSE metric values are missing
+# with tc: Something is wrong; all the RMSE metric values are missing
+
+#
+# 17. LASSO regression
+library(glmnet)
+
+x <- as.matrix(datz[,-1]) # all X vars
+y <- as.double(as.matrix(ifelse(datz[, 1]=='normal', 0, 1))) 
+
+set.seed(100)
+cv.lasso <- cv.glmnet(x, y, family='binomial', alpha=1, parallel=TRUE, standardize=TRUE, type.measure='auc')
+
+plot(cv.lasso)
+
+#
+# EFA
+#
+
+dat=fd
+dat.zero <- dat  # copia
+dat.zero[is.na(dat.zero)] <- 0 # reemplazo con 0 los valores nulos
+dat.std <- data.frame(scale(dat.zero , center=TRUE, scale=TRUE)) #estandarizar datos
+# describe(dat.std)
+
+# correlation plot from 'corrplot'
+{
+    library('corrplot')
+    corrplot(cor(dat, use="complete.obs"), 
+             order = "original", 		# also try 'hclust'
+             tl.col='black', tl.cex=.75) 
+}
+
+
+# FACTANAL() FAILS (SINGULAR MATRIX)
+{
+    # EFA with no rotation 
+    # (also try rotation = varimax, promax, oblimin)
+    # (also try scores="regression", "Barlett")
+    efa.result <- factanal( ~ . , data=dat, factors=10, rotation="none", na.action=na.exclude) #note the formula specification allows NA
+    efa.result <- factanal( ~ . , data=dat, factors=10, rotation="varimax", na.action=na.exclude) #note the formula specification allows NA
+
+    # look at sums of squared loadings (eigenvalues, variance explained by factor)
+    # factor 1
+    loadings_fac1 = efa.result$loadings[,1] 
+    eigenv_fac1 <- sum(loadings_fac1 ^ 2)
+
+    # uniqueness (1 - communality)
+    #    where communality = sum(ss of all factor loadings of a variable)
+    efa.result$uniquenesses
+    # variable 1
+    # Calculate communality
+    loadings_V1 <- efa.result$loadings[1,]  #loadings for first variable (1st row of Lambda)
+    communality_V1 <- sum(loadings_V1 ^ 2)  #SS of factor loadings
+    uniqueness_V1 <- 1-communality_V1
+
+    # plot factor loadings for first two factors
+    load <- efa.result$loadings[,1:2]
+    plot(load, type="n") # set up plot 
+    text(load,labels=names(dat),cex=.7) # add variable names
+
+}
+
+# THIS ONE HANGS FOREVER
+{
+    library(psych)
+    library(nFactors)
+    efa.res <- fa(r=cor.dat, nfactors=10, rotate="oblimin", fm="pa")
+    efa.res <- fa(r=cor.dat.std, nfactors=10, rotate="oblimin", fm="pa")
+    
+    cor.dat <- cor(datz[ , colnames(datz) != "pfu"], datz$pfu)
+    efa.res <- fa(r=cor.dat, nfactors=4, rotate="oblimin", fm="pa")
+
+}
+# OTHER EFA IMPLEMENTATIONS ALSO FAIL
+
+
+#
+# EGA
+#
+# THIS FAILS TOO AFTER A LONG TIME (FORTRAN error)
+{
+    library("devtools")
+    devtools::install_github('hfgolino/EGA')
+
+    library(EGAnet)
+    ega.res <- EGA(data=dat.std, model='glasso')	# fails (FORTRAN error)
+    ega.res <- EGA(data=dat.std)
+    # fails to compute due to FORTRAN error about long vectors
+}
+
+
+#
+# EFA taken more carefully
+#
+#	I tried to repeat EFA using the three corrected counts. 
+#
+# With all data it takes too long. So, I tried using smaller subsets.
+# with 100 genes it worked for psych::fa (other implementations failed
+# at singular matrix steps, psych::fa detects the situation and takes
+# a detour (uses the pseudo-inverse) to complete the calculations.
+#
+# Trying with increasing numbers of genes (200, 400, 800) also completed
+# but took much longer
+#
+# This led to two observations:
+#	1) we do not need all genes, only ones with significant l2FC
+#	2) in the cases where fa.parallel was allowed to run to completion
+#	   the optimal number of hidden variables seems to be either 4 (by
+#      the intersection with simulated data) or 6 (by the elbow method)
+#
+# Applying EFA with psych::fa() to the significant l2FC dataset using
+# 6 as the number of factors works more or less... depending on the
+# method: some methods will result in unreliable factoring, some in
+# calculation problems, and some simply work. Increasing the number of
+# factors reaches a point where the calculation fails.
+#
+# This led to additional observations:
+#   1) choosing an appropriate number of factors will determine completion
+#	2) choosing an appropriate combination of methods will also determine
+#      completion.
+#
+# After this, I decided to retake the calculations with the log2FC data
+# directly again applying what I had learnt from the count data and now
+# we can make it work.
+#
+# The plots of hidden factors suggest that there is a major one that
+# includes the (0, 0.1, 1, 10, 100) column. These would be the genes
+# that correlate linearly with infection level. The other groups are
+# genes with coherent responses that do not follow the infection level
+# pattern. They may still be highly relevant and biologically significant
+# but we need to identify what they do.
+#
+#	Corollary: we need now to separate the factor components and annotate
+# them.
+#
+# Another element to investigate is what happens if we isolate the group
+# of genes that correlate with infection level and run EFA again on them.
+# With a bit of luck, after removing extra "noise" we might be able to
+# further isolate additional subgroups.
+#
+# This is the analysis that worked (removing the partial analyses):
+#
+{
+    library(corrplot)
+    library(factoextra)
+    library(ctv)
+    library(psych)
+    library(psychTools)
+    library(nFactors)
+
+
+    #
+    # Load the data
+    #
+
+    # Load log2FC of significantly altered genes:
+    #df <- read.table("data/coturnix/rnaseq-test/both_ends/DESeq2/signif/all_log2FC_transpose.txt",header=T)
+    df <- read.table("all_log2FC.txt",header=T)
+    fd <- read.table("all_log2FC_transpose.txt",header=T)
+    
+    # this ensures that rows get the proper PFU irrespective
+    # of order
+    #	1. remove prefix
+    pfu <- sub("wt.*pfu", "", fd$gene)
+    #	2. remove suffix
+    pfu <- sub("_l2fc", "", pfu)
+    # add a column "$pfu" and remove column 'gene'
+    fd <- cbind(pfu=as.numeric(pfu), fd[ , -1])
+    
+    
+    # set name of first column
+    names(fd)[1] <- 'pfu'
+    fd[,1] <- c(0.1, 1.0, 10.0, 100.0)
+    # define working data sets
+    # 1. add a row of all zeros for the wild.type
+    #    (pfu = 0, l2fc=0 for all genes)
+    dat  <- as.data.frame(rbind(rep(0,dim(dat)[2]),dat))
+    # 2. remove columns with NAs
+    dat.noNA <- fd[ , colSums(is.na(fd))==0]			# remove NAs
+    # 3. substitute NAs by zero (should this be -inf?)
+    datz <- fd
+    datz[ is.na(dat) ] <- 0
+    #
+    # we will ignore datz for now because there is no consensus
+    # on how to evaluate unobserved genes regarding l2FC
+    datz <- dat.noNA
+
+
+    # load normalized counts of all genes
+    nc <- read.table(file="normalized_counts.tab", header=T)
+    tnc <- t(nc)
+    # prepend a column with infection levels
+    # upon read columns are not preserved
+    #tnc <- cbind(c(rep(0, 3), rep(0.1, 3), rep(1.0,3), rep(10.0,3), rep(100.0,3)), tnc)
+    # so we will fix the labels
+    pfu <- rownames(tnc)
+    pfu <- sub('^X', '', pfu)
+    pfu <- sub('pfu.*', '', pfu)
+    pfu <- sub('wt.*', '0.0', pfu)
+    pfu <- as.numeric(pfu)
+    tnc <- cbind(pfu=pfu, tnc)
+    tnc <- as.data.frame( tnc )		# just in case
+
+    # select only counts of sigfigicantly altered genes:
+    sig.tc <- cbind(pfu=tnc[ ,1], tnc[ , colnames(tnc) %in% colnames(dat)] )
+    tc <- sig.tc
+
+
+
+    # working with log2FC is difficult: it fails in many cases
+    # it is better to jump ahead and use 'tc' the corrected, filtered
+    # tri-sample counts.
+    dat.cor <- cor(dat, use="pairwise.complete.obs")
+    corrplot(dat.cor, order='hclust', tl.col="black")	
+    # the correlation plot should show if there is structure
+
+    dat.fa.paral <- fa.parallel(x=dat.cor, fm="minres", fa="fa") #use pseudo-inverse
+    print(dat.fa.paral)
+    plot(dat.fa.paral)
+    # this should show a recommended number of factors if it worked
+    dat.scree <- nScree(x=dat.cor, model="factors")
+    plot(dat.scree)
+
+    dat.efa       <- fa(dat)		# nfactors defaults to 1 (see help for meaning)
+    dat.efa.6.u   <- fa(dat, nfactors=6, fm='uls')    # does not converge
+    dat.efa.6.m   <- fa(dat, nfactors=6, fm='minres') # does not converge
+    dat.efa.6.mvt <- fa(dat, nfactors=6, fm='minres',
+                   rotate='varimax', scores='tenBerge')  # results are suspect
+    dat.efa.6.fvt <- fa(dat, nfactors=6, fm='fa',
+                   rotate='varimax', scores='tenBerge')  # results are suspect
+    dat.efa.6.mqt <- fa(dat, nfactors=6, fm='minres',
+                   rotate='quartimax', scores='tenBerge')# suspect
+    dat.efa.6.mbt <- fa(dat, nfactors=6, fm='minres',
+                   rotate='bentlerT', scores='tenBerge') # singular
+    dat.efa.6.wbt <- fa(dat, nfactors=6, fm='wls',
+                   rotate='bentlerT', scores='tenBerge') # singular
+    #
+    # with correlation matrix (should be the same)
+    #
+    dat.fa <- fa(r=dat.cor, nfactors=6)					
+    # this may need several attempts to get it to converge
+    # (it may fail with lack of convergence after 1000 iterations)
+    # we may still use it (but should not trust it)
+    dat.fa.6.m <- fa(r=dat.cor, nfactors=6, fm="minres")
+    # faster, does not get confidence intervals:
+    dat.fac.6.mvt <- fac(r=dat.cor, nfactors=6, 
+                fm="minres", rotate='varimax', scores='tenBerge') #suspect
+    dat.fac <- dat.fac.6.mvt
+    # singular, says factors are exactly uncorrelated and that it 
+    # switches rotation to 'promax'
+    dat.fa.6.minres <- fa(r=dat.cor, fa='fa', nfactors=6, fm="minres") # singular
+    # works
+    dat.fa.6.minres.varimax <- fa(r=dat.cor, nfactors=6, fm = "minres", rotate='varimax')
+    # works
+    dat.fa.6.minres.bentlerQ <- fa(r=dat.cor, nfactors=6, fm = "minres", rotate='bentlerQ')
+    # fm=uls, ml, and pa, and wls all fail, ols is too slow
+    
+    # using 4 factors does not give major problems
+    dat.fa.nf4   <- fa(r=dat.cor, nfactors=4)
+    dat.fa.nf4.m <- fa(r=dat.cor, nfactors=4, fm="minres")
+    
+    fa.plot(dat.fa)
+    fa.plot(dat.fac)
+    fa.diagram(dat.fa)
+    fa.diagram(dat.fac)
+
+
+    tc.cor <- cor(tc, use="pairwise.complete.obs")
+    corrplot(tc.cor, order='hclust', tl.col="black")	
+    # the correlation plot should show if there is structure
+
+    tc.fa.paral <- fa.parallel(x=tc.cor, fm="minres", fa="fa")
+    print(tc.fa.paral)
+    plot(tc.fa.paral)
+    vss(tc)
+    # this should show a recommended number of factors
+    tc.scree <- nScree(x=tc.cor, model="factors")
+    plot(tc.scree)
+
+    tc.fa <- fa(r=tc.cor, nfactors=6)
+    # this may need several attempts to get it to converge (diff. random seeds)
+    # (it may fail with lack of convergence after 1000 iterations)
+    tc.fa <- fa(r=tc.cor, nfactors=6, fm="minres")
+    # this works well
+    tc.fa <- fa(r=tc.cor, nfactors=6, 
+                fm="minres", rotate='varimax', scores='tenBerge')
+    # faster, does not get confidence intervals:
+    tc.fac <- fac(r=tc.cor, nfactors=6, 
+                fm="minres", rotate='varimax', scores='tenBerge')
+    # I tried other factoring methods (minres, uls, ols, pa, fa, ml,...), 
+    # rotations (varimax, quartimax, bentlerT, onlimin, ...) and 
+    # scores (regression, tenBegre, Barlett, ...) without better results.
+    # Some simply do not run, fail or take excessively long.
+
+    fa.plot(tc.fa)
+    fa.plot(tc.fac)
+
+    fa.graph(tc.fa)
+    fa.graph(tc.fac)
+
+    fa.diagram(tc.fa)
+    fa.diagram(tc.fac)
+
+    # use a hierarchical clustering solution to find omega
+    iclust(tc)
+    omega(tc)
+    bassAkward(tc)
+
+    # find alpha as an estimate of reliability
+    alpha(tc)
+
+}
+
+
+# 
+{
+    library(psych)
+
+    cor.dat <- cor(dat[, -1], use="pairwise.complete.obs")
+    cor.dat.zero<- cor(datz[, -1], use="pairwise.complete.obs")
+    cor.dat.std <- cor(dat[, -1], use="pairwise.complete.obs")
+
+   # get parallel analysis scree plots
+    fa.parallel(x=cor.dat, fm="minres", fa="fa")
+    
+    library(nfactors)
+    nScree(x=cor.dat, model="factors")
+    plot(nScree(x=cor.dat,model="factors"))
+
+    # these take like almost forever, do not use
+    efa.res <- fa(r=cor.dat, nfactors=10, rotate="oblimin", fm="pa")
+    efa.res <- fa(r=cor.dat.zero, nfactors=10, rotate="oblimin", fm="pa")
+    efa.res <- fa(r=cor.dat.std, nfactors=10, rotate="oblimin", fm="pa")
+
+    # use these instead
+    library(psych)
+
+    # calculate correlation matrix
+    dat.cor <- cor(dat, use="pairwise.complete.obs")
+    corrplot(dat.cor, order='hclust', tl.col="black")	
+    # the correlation plot should show if there is structure
+
+    # do parallel FA and simulated runs to estimate number of factors
+    dat.fa.paral <- fa.parallel(x=dat.cor, fm="minres", fa="fa")
+    print(dat.fa.paral)
+    # this should show a recommended number of factors
+    dat.scree <- nScree(x=dat.cor, model="factors")
+    plot(dat.scree)
+
+    # do the actual EFA analysis
+    #dat.fa <- fa(r=dat.cor, nfactors=6)
+    # the above may need several attempts to get it to converge
+    # (it may fail with lack of convergence after 1000 iterations)
+    # these seem to work better
+    dat.fa <- fa(r=dat.cor, nfactors=6, fm="minres") #does not converge
+    dat.fac <- fa(r=dat.cor, nfactors=6, 
+                fm="minres", rotate='varimax', scores='tenBerge') #suspect
+
+
+    tc.cor <- cor(tc, use="pairwise.complete.obs")
+    corrplot(tc.cor, order='hclust', tl.col="black")	
+    # the correlation plot should show if there is structure
+
+    tc.fa.paral <- fa.parallel(x=tc.cor, fm="minres", fa="fa")
+    print(tc.fa.paral)
+    # this should show a recommended number of factors
+    tc.scree <- nScree(x=tc.cor, model="factors")
+    plot(tc.scree)
+
+    tc.fa <- fa(r=tc.cor, nfactors=6)
+    # this may need several attempts to get it to converge
+    # (it may fail with lack of convergence after 1000 iterations)
+    tc.fa <- fa(r=tc.cor, nfactors=6, fm="minres")
+    tc.fac <- fa(r=tc.cor, nfactors=6, 
+                fm="minres", rotate='varimax', scores='tenBerge') #works
+
+}
+
+#
+## F I N A L    E F A     R E S U L T S
+dir.create('efa', showWarning=FALSE)
+
+tc.cor <- cor(tc, use="pairwise.complete.obs")
+png("efa/tc_corplot.png", width = 800, height = 600)
+corrplot(tc.cor, order='hclust', tl.col="black") #the plot is wrong
+dev.off()
+
+tc.fa.paral <- fa.parallel(x=tc.cor, fm="minres", fa="fa")
+print(tc.fa.paral)
+
+# nFctors = 6
+tc.fac <- fa(r=tc.cor, nfactors=6, 
+             fm="minres", rotate='varimax', scores='tenBerge') #works
+
+sink('efa/tc_fac_6.txt')
+print(tc.fac)
+sink()
+
+png("efa/tc_fac_6_plot.png", width = 800, height = 600)
+fa.plot(tc.fac)
+dev.off()
+
+png("efa/tc_fac_6_diagram.png", width = 800, height = 600)
+fa.diagram(tc.fac)
+dev.off()
+
+# nFactors = 4
+tc.fac <- fa(r=tc.cor, nfactors=4, 
+             fm="minres", rotate='varimax', scores='tenBerge') #works
+
+
+write.table(tc.fac, file='efa/tc_fac_4.txt') #cannot coerce class c(psych,fa) to a data.frame
+
+sink('efa/tc_fac_4.txt')
+print(tc.fac)
+sink()
+
+png("efa/tc_fac_4_plot.png", width = 800, height = 600)
+fa.plot(tc.fac)
+dev.off()
+
+png("efa/tc_fac_4_diagram.png", width = 800, height = 600)
+fa.diagram(tc.fac)
+dev.off()
+
+##
+# ANNOTATE EFA RESULTS
+sink('efa/tc_fac_4_graph.txt')
+print(fa.graph(tc.fac))
+sink()
+
+datos <- readLines('efa/tc_fac_4_graph.txt')
+
+genes_por_factor <- list()
+
+resultados <- vector("list", length(datos))
+
+for (i in seq_along(datos)){
+	linea <- datos[i]
+	if (grepl("->", linea)){
+    	factor_variable <- strsplit(linea, "->")[[1]]
+    	factor <- trimws(factor_variable[1])
+    	variable <- trimws(factor_variable[2])
+        
+        num_variable <- gsub("([V]\\d+)\\s.*", "\\1", variable)
+        for (otra_linea in datos) {
+        	if (startsWith (linea, num_variable)){
+            	gene <- gsub(".*label = \"(ENSC.*?)\".*", "\\1", otra_linea)                     
+            }
+        }
+        resultados[[i]] <- c(linea, gene)
+           #     if (!factor %in% names(genes_por_factor)) {
+           #         genes_por_factor[[factor]] <- list(gene)
+           #    } else {
+           #         genes_por_factor[[factor]] <- c(genes_por_factor[[factor]], gene)
+           #     } 
+           # }
+        }
+     }
+     
+df <- as.data.frame(do.call(rbind, resultados))
+colnames(df) <- c("efa"  , "gene")
+     
+
+
+######################################
+###      ANNOTATE THE RESULTS      ###
+######################################
+
+# working directory: data/coturnix
+
+#
+# GA
+datz.i.ga <- read.table(file='rnaseq-test/both_ends/DESeq2/signif/impgenes/imp_ga_datz.txt', header=T)
+all.log <- read.table(file='rnaseq-test/both_ends/DESeq2/signif/all_log2FC.txt', 
+					  header=T) #variable: combined_data
+
+datz.i.ga <- data.frame(datz.i.ga)
+
+datz.i.ga.log <- cbind(datz.i.ga, all.log[ match(datz.i.ga$x, all.log$gene), ])
+datz.i.ga.log <- datz.i.ga.log [, -1]
+
+# execute function get_ens_ann & obtain biomart annotation
+bm.annot.1 <- read.table(file='../../biomaRt.annotation.1st.txt', sep='\t', header=T)
+
+ens.db <- readRDS(file='../../../../net.EnsDb/net.ens.db.rds')
+ens.ann <- get_ens_ann(rownames(countData), ens.db, folder='../../../../')$ens.ann
+
+datz.i.ga.log.ann <- cbind(datz.i.ga.log, 
+                           ens.ann[ match(datz.i.ga.log$gene, ens.ann$GENEID), ])
+    
+datz.i.ga.log.ann <- cbind(datz.i.ga.log.ann, 
+                           bm.annot.1[ match(datz.i.ga.log.ann$gene, bm.annot.1$ensembl_gene_id), ])
+
+write.table(datz.i.ga.log.ann, file='rnaseq-test/both_ends/DESeq2/signif/impgenes/ga_annot.txt')
+
+#
+# MARS
+datz.i.mars <- read.table(file='rnaseq-test/both_ends/DESeq2/signif/impgenes/imp_mars_datz.txt', header=T)
+
+datz.i.mars.log <- cbind(datz.i.mars, all.log[ match(rownames(datz.i.mars), all.log$gene), ])
+datz.i.mars.log <- datz.i.mars.log [8:12]
+rownames(datz.i.mars.log) <- c(1,2,3) # it is necessary to have the genes in the first column, not as rownames
+
+datz.i.mars.log.ann <- cbind(datz.i.mars.log, 
+                           ens.ann[ match(datz.i.mars.log$gene, ens.ann$GENEID), ])
+    
+datz.i.mars.log.ann <- cbind(datz.i.mars.log.ann, 
+                           bm.annot.1[ match(datz.i.mars.log.ann$gene, bm.annot.1$ensembl_gene_id), ])
+
+write.table(datz.i.mars.log.ann, file='rnaseq-test/both_ends/DESeq2/signif/impgenes/mars_annot.txt')
+
+#
+# SA
+datz.i.sa <- read.table(file='rnaseq-test/both_ends/DESeq2/signif/impgenes/imp_sa_datz.txt', header=T)
+
+datz.i.sa.log <- cbind(datz.i.sa, all.log[ match(datz.i.sa$x, all.log$gene), ])
+datz.i.sa.log <- datz.i.sa.log [, -1]
+
+datz.i.sa.log.ann <- cbind(datz.i.sa.log, 
+                           ens.ann[ match(datz.i.sa.log$gene, ens.ann$GENEID), ])
+    
+datz.i.sa.log.ann <- cbind(datz.i.sa.log.ann, 
+                           bm.annot.1[ match(datz.i.sa.log.ann$gene, bm.annot.1$ensembl_gene_id), ])
+
+write.table(datz.i.sa.log.ann, file='rnaseq-test/both_ends/DESeq2/signif/impgenes/sa_annot.txt')
+
+## as a function:
+
+
+enrich_genes <- function(data, ann, data.genes, ann.genes) {
+   # add the annotation as additional columns to data, using as the
+   # column data.genes from data as index into ann.genes to find the
+   # corresponding annotation.
+   #
+   # use as
+   #	annotated.data <- enrich_genes(data, "ensembl.gene.id", ensembl.ann, "GENEID")
+   #	annotated.data <- enrich_genes(data, "ensembl.gene.id", biomart.ann, "ensembl_gene_id")
+   #
+   enriched_genes <- cbind(data, ann[match(data[ ,data.genes], ann[ ,ann.genes]), ]) 
+
+}
+
+
+annotate_genes <- function(data_file, log_file, ann_file) {
+
+    datz <- read.table(file = data_file, header = TRUE)
+    all.log <- read.table(file = log_file, header = TRUE)
+    
+	# it is required to change the format of the dataset before
+    # when entering this function, it should only have one column with the name of the genes (x)
+    datz.log <- cbind(datz, all.log[match(datz$x, all.log$gene), ]) 
+    datz.log <- datz.log[, -1] 
+    
+    datz.log.ann <- enrich_genes(datz.log, "gene", ens.ann, "GENEID")
+    datz.log.ann <- enrich_genes(datz.log.ann, "gene", bm.annot.1, "ensembl_gene_id")
+
+    write.table(datz.log.ann, file = ann_file)
+}
+
+
+annotate_genes('impgenes/imp_boruta_selected_tc.txt', 'all_log2FC.txt', 'impgenes/annot_boruta.txt')
+
+    data.boruta <- read.table(file = 'impgenes/imp_boruta_selected_tc.txt', header = TRUE)
+    data.cor    <- read.table(file = 'impgenes/imp_cor_dat.txt', header=T)
+
+
+annotate_genes('impgenes/imp_cor_dat.txt', 'all_log2FC.txt', 'impgenes/annot_cor_dat.txt')
+annotate_genes('impgenes/imp_cor_datz.txt', 'all_log2FC.txt', 'impgenes/annot_cor_datz.txt')
+annotate_genes('impgenes/imp_cor_tc.txt', 'all_log2FC.txt', 'impgenes/annot_cor_tc.txt')
+
+annotate_genes('impgenes/imp_rfe_dat.txt', 'all_log2FC.txt', 'impgenes/annot_rfe_dat.txt')
+annotate_genes('impgenes/imp_rfe_datz.txt', 'all_log2FC.txt', 'impgenes/annot_rfe_datz.txt')
+annotate_genes('impgenes/imp_rfe_tc.txt', 'all_log2FC.txt', 'impgenes/annot_rfe_tc.txt')
+
+annotate_genes('impgenes/imp_stepwise_datz_edited.txt', 'all_log2FC.txt', 'impgenes/annot_stepwise_datz.txt')
+annotate_genes('impgenes/imp_xgboost_datz_edited.txt', 'all_log2FC.txt', 'impgenes/annot_xgboost_datz.txt')
+
+annotate_genes('impgenes/imp_rrf_tc_3.0_edited.txt', 'all_log2FC.txt', 'impgenes/annot_rrf_tc.txt')

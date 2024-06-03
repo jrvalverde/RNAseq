@@ -1,0 +1,190 @@
+En Intro:
+
+	- virus: caracteristicas 
+	- enfermedad: relevancia economica y sintomas generales
+	- caracteristicas del virus ?
+
+	- respuesta aviar: dos especies 
+	- laboratorio experiencia
+	- RNA-Seq
+
+	- metodos tradicionales (GSEA, PCA... script)
+	- tecnicas aprendizaje automatico
+
+....
+
+
+Necesitamos:
+
+Los ficheros "fastq" con las lecturas obtenidas por NGS a partir de RNA
+celular.
+
+Un fichero con metadatos, es decir, la descripcion de las muestras como
+una tabla que indique para cada fichero las propiedades de la muestra a 
+la que corresponde: "SampleInfo.txt"
+
+La informacion sobre el genoma del organismo del que proceden las muestras:
+
+	- la secuencia para poder alinear las lecturas contra el genoma
+    	"genome.fasta"
+    
+    - la informacion sobre las caracteristicas del genoma, es decir,
+    genes y demas, con sus coordenadas, para poder saber que se haya en
+    la posicion en la que mapea cada lectura, en formato GTF o GFF3
+        "genome.gtf" o "genome.gff"
+     
+     La secuencia y la anotacion del genoma deben de corresponderse (ser
+     la misma version) por lo que lo mejor es obtener ambas de ENSEMBL al 
+     mismo tiempo.
+     
+     - la anotacion detallada de cada gen o caracteristica, obtenida de
+     bases de datos especializadas a traves de la red para poder interpretar
+     lo que es cada gen o caracteristica.
+
+
+Lo que hacemos:
+
+	1) los ficheros FASTQ vienen con nombres incomodos, asi que creamos
+    otro directorio con enlaces a los FASTQ originales pero con nombres 
+    mas adecuados
+    
+    2) los ficheros FASTQ vienen con un filtrado minimo, asi que los filtramos
+    mas a fondo con NGS_QC y se guardan en subcarpetas dentro de otro 
+    directorio
+    	"qc"
+        
+    3) para no liarnos con muchas carpetas, creamos un directorio con
+    enlaces a los FASTQ filtrados
+    	"fastq-qc-paired"
+    
+    Estos son ya los que usamos para hacer el analisis con el script.
+    
+    4) Los ficheros FASTQ se alinean contra la secuencia del genoma
+    usando el paquete Rsubread
+    	buildindex(basename=db, genome.fasta )
+        align(index=db, 
+              readfile1=lista_de_ficheros_FASTQ_R1, 
+              readfile2=lista_de_ficheros_FASTQ_R2)
+  
+    y guardamos los alineamientos (BAM) en una carpeta nueva para tener todo
+    limpito
+    
+    
+    5) Usando los alineamientos en formato BAM, contamos las lecturas que
+    mapean en cada feature del genoma usando
+    
+    fc <- featureCounts(lista_de_ficheros_bam, genoma.gtf, etc...)
+    
+    mapeamos ambos lados de cada lectura por si hubiera quimeras mRNA+virus
+    no contarlas.
+    
+    6) fc tiene ahora todos los feature counts que vamos a usar para
+    hacer el análisis de expresión diferencial.
+
+Aqui empieza el analisis de expresion diferencial, con fc, la tabla de
+feature counts.
+
+
+....
+    
+
+En M&M
+
+
+	Los ficheros fastq obtenidos del secuenciador se filtraron usando NGS_QC,
+    y se alinearon con el paquete Rsubread de R contra la secuencia fasta
+    del genoma de referencia exigiendo que ambos extremos de las lecturas
+    mapeen contra el genoma. Los alineamientos se usaron para obtener
+    la tabla de contajes usando el fichero de anotacion GTF.
+    
+    La expresion diferencial para cada gen se calculo usando protocolos
+    estandar de DESEq2. Los datos de expresion diferencial se anotaron usando
+    la informacion de ENSEMBL (derivada del fichero GTF) y las bases de datos
+    de BiomaRt (ENSEMBL, ENTREZ, GO, GOSLIM, PFAM, PIRSF, TIGRFAM, PROSITE,
+    PFSCAN, SUPERFAMILY, PDB y UNIPROT-SWISSPROT).
+
+    Usando la anotacion se hizo un analisis de GSEA agrupando por GO, PFAM
+    y KEGG.
+    
+    Reduccion de variables.
+ 
+ 	Se emplearon diversos metodos de aprendizaje por inteligencia artificial
+    para intentar reducir mas el numero de variables identificando las mas
+    significativas:
+    
+    A nivel de gen, se intento identificar los mas relevantes empleando 
+    metodos de analisis de importancia de variables (blah bla bla).
+    
+    A nivel de grupos se intento identificar automaticamente grupos de
+    genes que contribuyen a variables ocultas o componentes principales
+    que muestren una asociacion relevante con las caracteristicas de interes
+    en las  muestras (PCA, clustering, EFA, EGA, rEFA, bla bla bla)
+
+
+
+RESULTADOS
+
+	La expresion diferencial sale lo que sea
+    
+    El analisis de GSEA indica asociacion con los grupos que sean
+    
+    Como la interpretacion de los datos individuales de genes y de grupos
+    predefinidos era dificultosa, se decidio emplear medios de IA
+    
+    Los medios de reduccion de variables dieron resultados diversos:
+    
+    Los metodos x, y, z no dieron resultados utilizables
+    
+    Los metodos x, y, z dieron muy pocos resultados
+    
+    Los metodos x, y, z dierons unos numeros de genes a-b
+    
+    Los metodos de identificacion de variables ocultas direon tales resultados
+    
+
+DISCUSION
+
+	El analisis de expresion dio 8000 genes significativos, que con una 
+    anotacion exhaustiva dan lugar a una sobrecarga de informacion que
+    dificulta enromemente la interpretacion por los colegas del labo.
+    
+    El analisis de GSEA es muy util pero tiene un par de problemas, salen
+    muchos grupos con diferencias y la interpretacion requiere un analisis mas
+    en detalle de cada grupo ya que no todos los genes del grupo siguen
+    el mismo patron de aumento o reduccion de la expresion y estas diferencias
+    pueden afectar a la interpretacion
+    
+    Los metodos de reduccion de variables nos permiten reducir el numero de
+    genes a los mas importantes, pero pueden seleccionar un solo gen de un
+    grupo de genes que se correlacionan por igual, con lo que se sacrifica
+    informacion (esto es muy evidente en los que dan solo unos pocos genes).
+    El metodo x hace no se que y funciona o no porque lo que sea
+    ....
+    
+    Los metodos de identificacion de variables ocultas tienen la ventaja
+    de no perder informacion ya que identifican grupos de genes que se 
+    asocian de forma coordinada, pero tienen el riesgo de identificar grupos
+    dificiles de interpretar. 
+    El metodo x hace lo que sea y funciona o no por lo que sea.
+    ...
+    
+    
+CONCLUSIONES
+
+    Con el aumento de la profundidad de secuenciacion, los metodos
+    tradicionales (DE y GSEA) cada vez mas dan cantidades enormes de
+    informacion. lo que puede dificultar su interpretacion
+
+	El uso de herramientas de IA no supervisada puede permitir reducir
+    el numero de genes a considerar identificando los que tienen mas
+    importancia para explicar las caracteristicas de interes de la muestra.
+    
+    
+    Las herramientas de IA no supervisada pueden servir tambien para
+    detectar grupos de genes que se asocian con las caracteristicas de
+    interes, de forma similar a GSEA, pero detectando grupos no predefinidos.
+    
+    Todas estas herramintas estan en desarrollo continuo y activo,
+    cambiando continumente, por lo que conviene mantenerse al dia de 
+    su desarrollo para poder aplicarlas correctamente.
+    
