@@ -1792,13 +1792,13 @@ if (test_coturnix) {
     if (! is.null(tc.i.lvq)) {
         etc.i.lvq <- cbind(ensembl_gene_id=rownames(tc.i.lvq), tc.i.lvq)
         etc.i.lvq <- enrich_genes(etc.i.lvq, bio.ann)
-        write.table(etc.i.lvq, 'impgenes.sav/imp_lvq_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.lvq, 'impgenes/imp_lvq_tc.txt', sep='\t', row.names=F)
 
     	threshold <- 0.8
 		# select genes with imp > 0.8 in columns 2 to 6 (0-100)
 		rows.with.imp.gene <- apply(etc.i.lvq[,2:6], 1, function(x) any(x > threshold))
 		etc.i.lvq.gt0.8 <- etc.i.lvq[rows.with.imp.gene, ]
-    	write.table(etc.i.lvq.gt0.8, 'impgenes.sav/imp_lvq_most_signif_tc.txt', sep='\t', row.names=F)
+    	write.table(etc.i.lvq.gt0.8, 'impgenes/imp_lvq_most_signif_tc.txt', sep='\t', row.names=F)
     }
 
 	
@@ -1928,13 +1928,13 @@ if (test_coturnix) {
     if (exists(quote(tc.i.rf)) && ! is.null(tc.i.rf)) {
         etc.i.rf <- cbind(ensembl_gene_id=names(tc.i.rf), tc.i.rf)
         etc.i.rf <- enrich_genes(etc.i.rf, bio.ann)
-        write.table(etc.i.rf, 'impgenes.sav/imp_rf_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.rf, 'impgenes/imp_rf_tc.txt', sep='\t', row.names=F)
     }
 	#
 	nn <- subset(etc.i.rf, importance > 0)
-    write.table(nn, 'impgenes.sav/imp_rf_non_neglig_tc.txt', sep='\t', row.names=F)
+    write.table(nn, 'impgenes/imp_rf_non_neglig_tc.txt', sep='\t', row.names=F)
 	ms <- subset(nn, importance > quantile(importance, 0.8))
-    write.table(ms, 'impgenes.sav/imp_rf_most_signif_tc.txt', sep='\t', row.names=F)
+    write.table(ms, 'impgenes/imp_rf_most_signif_tc.txt', sep='\t', row.names=F)
 
     # 11: regularized random forest
 	#
@@ -2137,12 +2137,12 @@ if (test_coturnix) {
     if (exists(quote(tc.i.vita)) && ! is.null(tc.i.vita)) {
         etc.i.vita <- cbind(ensembl_gene_id=names(tc.i.vita), tc.i.vita)
         etc.i.vita <- enrich_genes(etc.i.vita, bio.ann)
-        write.table(etc.i.vita, 'impgenes.sav/imp_vita_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.vita, 'impgenes/imp_vita_tc.txt', sep='\t', row.names=F)
 #
 		etc.i.vita <- subset(etc.i.vita, importance > 0)
-        write.table(etc.i.vita, 'impgenes.sav/imp_vita_important_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.vita, 'impgenes/imp_vita_important_tc.txt', sep='\t', row.names=F)
 		etc.i.vita <- subset(etc.i.vita, importance > quantile(importance, 0.8))
-        write.table(etc.i.vita, 'impgenes.sav/imp_vita_most_signif_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.vita, 'impgenes/imp_vita_most_signif_tc.txt', sep='\t', row.names=F)
     }
 
     # 14: LASSO
@@ -2197,14 +2197,14 @@ if (test_coturnix) {
 		as.png(plot(etc.i.xgboost$Overall, 
 					ylab='importance', 
 					main="XGBoost importance"),
-			   "impgenes.sav/imp_xgboost_tc.png")
+			   "impgenes/imp_xgboost_tc.png")
 		#
 		etc.i.xgboost <- subset(etc.i.xgboost, Overall > 0)		
         write.table(etc.i.xgboost, 'impgenes/imp_xgboost_important_tc.txt', sep='\t', row.names=F)
 		as.png(plot(etc.i.xgboost$Overall, 
 					ylab='importance', 
 					main="XGBoost importance"),
-			   "impgenes.sav/imp_xgboost_tc_important.png")
+			   "impgenes/imp_xgboost_tc_important.png")
 		#
     }
 
@@ -2238,41 +2238,41 @@ if (test_coturnix) {
         etc.i.ga <- tc.i.ga
 		colnames(etc.i.ga)[1] <- 'ensembl_gene_id'
         etc.i.ga <- enrich_genes(etc.i.ga, bio.ann)
-        write.table(etc.i.ga, 'impgenes.sav/imp_ga_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.ga, 'impgenes/imp_ga_tc.txt', sep='\t', row.names=F)
 		as.png(plot(etc.i.ga[,2],
 					ylab=names(etc.i.ga)[2],
 					main="Genetic Algorithm"),
-					"impgenes.sav/imp_ga_tc.png")
+					"impgenes/imp_ga_tc.png")
 		as.png(hist(etc.i.ga[,2],
 					xlab=names(etc.i.ga)[2],
 					main="Genetic Algorithm"),
-					"impgenes.sav/imp_ga_tc_hist.png")
+					"impgenes/imp_ga_tc_hist.png")
 					
         etc.i.ga <- ptc.i.ga[[2]]
 		colnames(etc.i.ga)[1] <- 'ensembl_gene_id'
         etc.i.ga <- enrich_genes(etc.i.ga, bio.ann)
-        write.table(etc.i.ga, 'impgenes.sav/imp_ga_non_neglig_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.ga, 'impgenes/imp_ga_non_neglig_tc.txt', sep='\t', row.names=F)
 		as.png(plot(etc.i.ga[,2],
 					ylab=names(etc.i.ga)[2],
 					main="Genetic Algorithm"),
-					"impgenes.sav/imp_ga_tc_non_neglig.png")
+					"impgenes/imp_ga_tc_non_neglig.png")
 		as.png(hist(etc.i.ga[,2],
 					xlab=names(etc.i.ga)[2],
 					main="Genetic Algorithm"),
-					"impgenes.sav/imp_ga_tc_non_neglig_hist.png")
+					"impgenes/imp_ga_tc_non_neglig_hist.png")
 
         etc.i.ga <- ptc.i.ga[[3]]
 		colnames(etc.i.ga)[1] <- 'ensembl_gene_id'
         etc.i.ga <- enrich_genes(etc.i.ga, bio.ann)
-        write.table(etc.i.ga, 'impgenes.sav/imp_ga_most_signif_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.ga, 'impgenes/imp_ga_most_signif_tc.txt', sep='\t', row.names=F)
 		as.png(plot(etc.i.ga[,2],
 					ylab=names(etc.i.ga)[2],
 					main="Genetic Algorithm"),
-					"impgenes.sav/imp_ga_tc_most_signif.png")
+					"impgenes/imp_ga_tc_most_signif.png")
 		as.png(hist(etc.i.ga[,2],
 					xlab=names(etc.i.ga)[2],
 					main="Genetic Algorithm"),
-					"impgenes.sav/imp_ga_tc_most_signif_hist.png")
+					"impgenes/imp_ga_tc_most_signif_hist.png")
     }
 
     
@@ -2296,39 +2296,39 @@ if (test_coturnix) {
     if (exists(quote(tc.i.sa)) && ! is.null(tc.i.sa)) {
         etc.i.sa <- tc.i.sa ; colnames(etc.i.sa)[1] <- 'ensembl_gene_id'
         etc.i.sa <- enrich_genes(etc.i.sa, bio.ann)
-        write.table(etc.i.sa, 'impgenes.sav/imp_sa_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.sa, 'impgenes/imp_sa_tc.txt', sep='\t', row.names=F)
 		as.png(plot(etc.i.sa[,2],
 					ylab=names(etc.i.sa)[2],
 					main="Simulated Annealing"),
-					"impgenes.sav/imp_sa_tc.png")
+					"impgenes/imp_sa_tc.png")
 		as.png(hist(etc.i.sa[,2],
 					xlab=names(etc.i.sa)[2],
 					main="Simulated Annealing"),
-					"impgenes.sav/imp_sa_tc_hist.png")
+					"impgenes/imp_sa_tc_hist.png")
 
         etc.i.sa <- ptc.i.sa[[2]] ; colnames(etc.i.sa)[1] <- 'ensembl_gene_id'
         etc.i.sa <- enrich_genes(etc.i.sa, bio.ann)
-        write.table(etc.i.sa, 'impgenes.sav/imp_sa_non_neglig_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.sa, 'impgenes/imp_sa_non_neglig_tc.txt', sep='\t', row.names=F)
         as.png(plot(etc.i.sa[,2],
 					ylab=names(etc.i.sa)[2],
 					main="Simulated Annealing"),
-					"impgenes.sav/imp_sa_tc_non_neglig.png")
+					"impgenes/imp_sa_tc_non_neglig.png")
 		as.png(hist(etc.i.sa[,2],
 					xlab=names(etc.i.sa)[2],
 					main="Simulated Annealing"),
-					"impgenes.sav/imp_sa_tc_non_neglig_hist.png")
+					"impgenes/imp_sa_tc_non_neglig_hist.png")
 
 		etc.i.sa <- ptc.i.sa[[3]] ; colnames(etc.i.sa)[1] <- 'ensembl_gene_id'
         etc.i.sa <- enrich_genes(etc.i.sa, bio.ann)
-        write.table(etc.i.sa, 'impgenes.sav/imp_sa_most_signif_tc.txt', sep='\t', row.names=F)
+        write.table(etc.i.sa, 'impgenes/imp_sa_most_signif_tc.txt', sep='\t', row.names=F)
 		as.png(plot(etc.i.sa[,2],
 					ylab=names(etc.i.sa)[2],
 					main="Simulated Annealing"),
-					"impgenes.sav/imp_sa_tc_most_signif.png")
+					"impgenes/imp_sa_tc_most_signif.png")
 		as.png(hist(etc.i.sa[,2],
 					xlab=names(etc.i.sa)[2],
 					main="Simulated Annealing"),
-					"impgenes.sav/imp_sa_tc_most_signif_hist.png")
+					"impgenes/imp_sa_tc_most_signif_hist.png")
     }
 
 
@@ -3515,4 +3515,25 @@ if (test_gallus2) {
 	# On the other hand, as the number of variables increases, the
 	# results of CA and CCA become similar, so its advantages may be 
 	# limited in our case.
+
+
+#####
+CLUSTERING
+
+library(dplyr)
+library(pheatmap)
+
+tc <- read.table('normalized_counts.tab', header=T)
+
+new_columns <- gsub("\\.sorted\\.bam$", "", colnames(tc))
+
+# Asigna los nuevos nombres de columnas al data frame
+colnames(tc) <- new_columns
+
+# Verifica los nuevos nombres de las columnas
+colnames(tc)
+
+d
+rownames(df) <- df$gen
+df <- df[, -1]
 

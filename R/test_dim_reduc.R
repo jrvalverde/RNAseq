@@ -519,8 +519,8 @@ load_coturnix_norm_count_data <- function(file="normalized_counts.tab", select=N
 
     if ( ! is.null(select)) {
         # select only counts of sigfigicantly altered genes:
-        sig.nc <- rbind(pfu=nc[1, ], nc[rownames(nc) %in% select])
-        sig.tc <- cbind(pfu=tnc[ ,1], tnc[ , colnames(tnc) %in% select ] )
+        sig.nc <- rbind(pfu=nc[1, ], nc[rownames(nc) %in% select, ])
+        sig.tc <- cbind(pfu=tnc[ ,1], tnc[ , colnames(tnc) %in% select, ] )
     #tc <- sig.tc
     } else {
         sig.nc <- nc
@@ -596,10 +596,10 @@ imp_cor <- function (formula, data, verbose=T) {
 
     data_cor <- cor(x, y)	
 
-    if (verbose) cat.info("selecting variables with cor > 0.8\n")
-    highlyCorrelated <- rownames(data_cor[data_cor[, 1] > 0.8, , drop = FALSE])
+    #if (verbose) cat.info("selecting variables with abs(cor) > 0.8\n")
+    #highlyCorrelated <- rownames(data_cor[abs(data_cor[, 1]) > 0.8, , drop = FALSE])
 
-    return(highlyCorrelated)
+    return(data_cor)
 }
 
 
@@ -652,6 +652,22 @@ imp_relimp <- function(formula, data, tune=F, verbose=T) {
 
     return(sort(relImportance$lmg, decreasing=TRUE)) # relative importance
 }
+
+high_cor_pairs <- which(abs(cor_matrix) > 0.9, arr.ind = TRUE)
+
+remove_high_cor <- function(data, threshold = 0.9) {
+  cor_matrix <- cor(data)
+  high_cor_pairs <- which(abs(cor_matrix) > threshold, arr.ind = TRUE)
+  
+  # Variables a eliminar (solo una de cada par)
+  vars_to_remove <- unique(high_cor_pairs[high_cor_pairs[, 1] > high_cor_pairs[, 2], 1])
+  
+  return(data[, -vars_to_remove])
+}
+
+data_reduced <- remove_high_cor(data[, -1])  # Excluir la variable dependiente 
+data_reduced <- cbind(data$y, data_reduced)
+names(data_reduced)[1] <- "y"
 
 
 
@@ -791,7 +807,9 @@ imp_mars <- function (formula, data, verbose=T) {
 # can be considered a special kind of neural network, precursor of SOM and
 # related o kNN, that applies a winner takes it all learning approach. During
 # learning it tends to select the most meaningful variables.
-
+#
+# LVQ uses dropout for training. 
+#
 #library(caret)
 
 imp_lvq <- function(formula, data, verbose=T) {
@@ -832,10 +850,17 @@ imp_rpart <- function(formula, data, tune=F, verbose=T) {
         if (verbose) cat.info("building rpart model\n")
         # this rcontrol was taken from iv_num in package 'riv'
         #	CAUTION: MAGIC NUMBERS
-        minbucket <- nrow(data)/10
+        minbucket <- nrow(data)/100
         if (minbucket < 1) minbucket <- 1
-        rcontrol <- rpart.control(cp=0.001, minbucket=minbucket)
+        rcontrol <- rpart.control(cp=0.0001, minbucket=minbucket)
         model <- rpart(data=tc, formula=formula, control=rcontrol)
+	
+	if (verbose) {
+		png('figures/rpart_tree.png')
+		plot(model)
+		text(model, pretty=1)
+		dev.off()
+	}
         # we need now a way to calculate importance. woe/riv might
         # be a good one if it did work, so we will use the ones
         # rpart itself calculates
@@ -1090,22 +1115,24 @@ imp_dalex <- function(formula=NULL, data, dep.var='', method='rf', verbose=T) {
         #print(varimps)
         #plot(varimps)
         vip <- DALEX::feature_importance(explained, type='variable_importance') # very slow
-        
-		# plot 20 most important
-        if (verbose) {
-		    cat.info('plotting importance')
-            nv<-dim(vip)[1] / length(levels(as.factor(vip$permutation)))
-            as.png(plot(vip[c(1,(nv-20):nv),]), 'impgenes/top20_dalex.png')
-        }
-        # get mean loss and sort to get variable importance
-        vip.mean.loss <- aggregate(vip$dropout_loss, list(vip$variable), mean)
-        imp <- (vip.mean.loss[ order(vip.mean.loss$x, decreasing=F),])
-        colnames(imp) <- c('variable', 'mean_dropout_loss')
-        #print(imp)
-        #head(imp)
-        #head(sort(imp))
-        return ( imp )
-    } 
+    }
+	# vip contains the results of all the permutations
+	# plot 20 most important
+    if (verbose) {
+		cat.info('plotting importance')
+        nv<-dim(vip)[1] / length(levels(as.factor(vip$permutation)))
+        as.png(plot(vip[c(1,(nv-20):nv),]), 'impgenes/top20_dalex.png')
+    }
+    # get mean loss and sort to get variable importance
+    vip.mean.loss <- aggregate(vip$dropout_loss, list(vip$variable), mean)
+    imp <- (vip.mean.loss[ order(vip.mean.loss$x, decreasing=F),])
+    colnames(imp) <- c('variable', 'mean_dropout_loss')
+    #print(imp)
+    #head(imp)
+    #head(sort(imp))
+	# re-sort imp
+	imp <- imp[order(imp$mean_dropout_loss, decreasing=T), ]
+    return ( imp )
 }
 
 
@@ -1152,7 +1179,7 @@ imp_vita <- function (formula=NULL, data, dep.var="", method='RF', verbose=T) {
 		# al. (2010) for the permutation variable importance measure 
 		# ‘VarImp’ in a random forest for classification and regression.
 		# When we use ranger, we are already asking for the permutation
-		# approach, so this is the same as using 'ramger' in imp_RF
+		# approach, so this is the same as using 'ranger' in imp_RF
 		return(regressor$variable.importance)
 	} else if (method == 'RF') {
         regressor <- randomForest(formula , data=data, importance=TRUE)  # fit the random forest with 
@@ -1252,8 +1279,32 @@ imp_lasso <- function (formula, data, verbose=T) {
 
 }
 
+library(glmnet)
 
+# Preparar los datos para glmnet
+x <- model.matrix(y ~ x1 + x2 + x3, data)[,-1]  # Matriz de dise?o sin el intercepto
+y <- data$y  # Variable dependiente
 
+# Ajustar el modelo LASSO
+lasso_model <- cv.glmnet(x, y, alpha = 1)
+plot(lasso_model)
+
+# Obtener los coeficientes del mejor modelo LASSO
+lasso_coefficients <- coef(lasso_model, s = "lambda.min")
+print(lasso_coefficients)
+
+library(Matrix)
+
+# Extraer los nombres de las variables seleccionadas
+selected_indices <- lasso_coefficients@i + 1  # +1 porque los ?ndices en R son 1-based
+selected_variables <- lasso_coefficients@Dimnames[[1]][selected_indices]
+selected_coefficients <- lasso_coefficients@x
+
+# Crear un data frame con las variables seleccionadas y sus coeficientes
+selected_model <- data.frame(Variable = selected_variables, Coefficient = selected_coefficients)
+
+# Mostrar las variables seleccionadas y sus coeficientes
+print(selected_model)
 
 # -- xgboost (Extreme Gradient Boosting)
 #
@@ -1323,7 +1374,14 @@ imp_ga <- function (formula, data, verbose=T) {
  	              iters = 100,  # normally much higher (100+)        
   	              gafsControl = ga_ctrl)
 
-    return(ga_obj$optVariables)
+	if (verbose) {
+    	save(ga_obj, file="impgenes/ga_obj.RData")
+		# recover with load('impgenes/ga_obj.RData')
+    }
+	return(data.frame(variable=ga_obj$optVariables, 
+					  importance=ga_obj$fit$importance#,
+					  #importanceSD=ga_obj$fit$importanceSD
+					  ))
 }
 
 
@@ -1367,7 +1425,13 @@ imp_sa <- function (formula, data, verbose=T) {
     		       y,
                    safsControl = sa_ctrl)
 
-    return(sa_obj$optVariables)
+    if (verbose) {
+	    save(sa_obj, file="impgenes/sa_obj.RData")
+		# recover with load('impgenes/sa_obj.RData')
+	}
+    return(data.frame(variable=sa_obj$optVariables, 
+					  importance=sa_obj$fit$importance,
+					  importanceSD=sa_obj$fit$importanceSD))
 }
 
 
@@ -1461,6 +1525,47 @@ get_efa_factors <- function(data, n.factors, annotation, force.recalculation=F, 
 
 
 
+calc_dist_ij <- function(i, j, row.coord, col.coord, dims) {
+	coords_i <- col.coord[i , dims]
+	coords_j <- row.coord[j , dims]
+	d <- sqrt(sum((coords_i - coords_j)^2))
+	return(d)
+}
+
+ca_assign_cols_to_rows <- function(col.coord, row.coord, dims) {
+	gw <- list()
+	for (i in rownames(col.coord)) {	# for each gene
+	    c#at('i.coords', i, col.coord[i,dims], '\n')
+		min_dist_i_j <- +Inf
+		for (j in rownames(row.coord)) { # for each sample type
+			#dist_i_j <- calc_dist_ij(i, j, row.coord, col.coord, dims)
+			dist_i_j <- dist(rbind(col.coord[i,dims], 
+			                       row.coord[j,dims]))
+			#cat('   coords', j, row.coord[j,dims], '\t')
+			#cat('    distance', dist_i_j, '\t')
+			if (dist_i_j < min_dist_i_j) {
+				min_dist_i_j <- dist_i_j
+				closest_row <- j
+				#cat('min\n')
+			} #else cat('\n')
+		}
+		#cat('\n  closest row to', i,  closest_row, min_dist_i_j, '\n')
+		#add gene i to gravity well of cell j
+		gw[[closest_row]] <- rbind(gw[[closest_row]], c(i, min_dist_i_j))
+		#print(gw[[closest_row]])
+	}
+	return(gw)
+}
+
+
+partition_importance <- function(table, column, threshold=0.8) {
+    imp <- table[ , column]
+    non.neglig <- subset(table, imp > median(imp))
+	nnimp <- non.neglig[ , column]
+	most.signif <- subset(table, imp > quantile(nnimp, threshold))
+
+	return( list(data=table, non.neglig=non.neglig, most.signif=most.signif ))
+}
 
 ######################################################################
 # load and prepare all required data
@@ -1513,8 +1618,7 @@ if (test_coturnix) {
 	clfc <- data$signif.l2fc.common.data		# common log2FC present in all samples
 
 	all.signif.genes <- colnames(lfc)					# genes significant in any pairwise comparison
-	norm_counts <- load_coturnix_norm_counts_data(
-	                             file="../../../normalized_counts.tab", 
+	norm_counts <- load_coturnix_norm_count_data(file="../../../normalized_counts.tab", 
 								 select=all.signif.genes )
 	# get the dataset that we will use
 	tc <- norm_counts$signif_transp_norm_counts
@@ -1553,7 +1657,8 @@ if (test_coturnix) {
     # we need to tune the following for each method because each
 	# returns the results in a different way
 	# (it would be better to ensure all functions return the same
-	# data columns in the same format)
+	# data columns in the same format, but some give all-together
+	# importance, and some per-sample importance)
     if (exists(quote(lfc.i.cor)) && ! is.null(lfc.i.cor)) {
         edat.i.cor <- data.frame(ensembl_gene_id=(lfc.i.cor))
         edat.i.cor <- enrich_genes(edat.i.cor, bio.ann)
@@ -1604,7 +1709,7 @@ if (test_coturnix) {
         write.table(edat.i.step, 'impgenes/imp_step_dat.txt', sep='\t', row.names=F)
     }
     if (! is.null(clfc.i.step)) {
-        eclfc.i.step <-data.frame(ensembl_gene_id=names(clfc.i.step), cpeffocient=clfc.i.step)
+        eclfc.i.step <-data.frame(ensembl_gene_id=names(clfc.i.step), coeffocient=clfc.i.step)
         eclfc.i.step <- enrich_genes(eclfc.i.step, bio.ann)
         write.table(eclfc.i.step, 'impgenes/imp_step_datz.txt', sep='\t', row.names=F)
     }
@@ -1688,9 +1793,15 @@ if (test_coturnix) {
         etc.i.lvq <- cbind(ensembl_gene_id=rownames(tc.i.lvq), tc.i.lvq)
         etc.i.lvq <- enrich_genes(etc.i.lvq, bio.ann)
         write.table(etc.i.lvq, 'impgenes/imp_lvq_tc.txt', sep='\t', row.names=F)
+
+    	threshold <- 0.8
+		# select genes with imp > 0.8 in columns 2 to 6 (0-100)
+		rows.with.imp.gene <- apply(etc.i.lvq[,2:6], 1, function(x) any(x > threshold))
+		etc.i.lvq.gt0.8 <- etc.i.lvq[rows.with.imp.gene, ]
+    	write.table(etc.i.lvq.gt0.8, 'impgenes/imp_lvq_most_signif_tc.txt', sep='\t', row.names=F)
     }
 
-
+	
     # 7: Boruta
 	#
     lfc.i.boruta <- imp_boruta(formula, lfc)
@@ -1819,6 +1930,11 @@ if (test_coturnix) {
         etc.i.rf <- enrich_genes(etc.i.rf, bio.ann)
         write.table(etc.i.rf, 'impgenes/imp_rf_tc.txt', sep='\t', row.names=F)
     }
+	#
+	nn <- subset(etc.i.rf, importance > 0)
+    write.table(nn, 'impgenes/imp_rf_non_neglig_tc.txt', sep='\t', row.names=F)
+	ms <- subset(nn, importance > quantile(importance, 0.8))
+    write.table(ms, 'impgenes/imp_rf_most_signif_tc.txt', sep='\t', row.names=F)
 
     # 11: regularized random forest
 	#
@@ -1837,7 +1953,8 @@ if (test_coturnix) {
         write.table(eclfc.i.rrf, 'impgenes/imp_rrf_datz.txt', sep='\t', row.names=F)
     }
     if (exists(quote(tc.i.rrf)) && ! is.null(tc.i.rrf)) {
-        etc.i.rrf <- cbind(ensembl_gene_id=rownames(tc.i.rrf), tc.i.rrf)
+	    etc.i.rrf <- cbind(ensembl_gene_id=rownames(tc.i.rrf), tc.i.rrf)
+        #etc.i.rrf <- etc.i.rrf[ etc.i.rrf$Overall != 0,]
         etc.i.rrf <- enrich_genes(etc.i.rrf, bio.ann)
         write.table(etc.i.rrf, 'impgenes/imp_rrf_tc.txt', sep='\t', row.names=F)
     }
@@ -1864,6 +1981,115 @@ if (test_coturnix) {
     clfc.i.dalex <- imp_dalex(formula, clfc, method='rangerRF')
     tc.i.dalex <- imp_dalex(formula, tc, method='rangerRF')
 
+	# THIS IS ARBITRARY SO FAR AS WE CAN TELL
+    #
+    # The Dropout Learning Algorithm
+	# Pierre Baldi and Peter Sadowski, Artif Intell. 2014 May; 210: 78?122. 
+    #
+    # Dropout is typically used for training Neural Networks. It consists in
+    # "dropping out" (a) different random node(s) in different iterations of the
+    # training. 
+    # When we use it to "identify importance" we are dropping out a random variable 
+    # in different iterations of the estimation, as such it is similar to a shallow
+    # neural network and so, in principle, we may expect imilar behavior. 
+    # It has been reported that for a single unit, in a shallow, one-layer, neural
+    # network with a logistic sigmoidal function dropout works like a kind of
+    # "geometric" ensemble averaging [REF ABOVE]. 
+    # It is worth noting that the family of functions with dropout properties are
+    # either constant f(x) = K, or all logistic functions. Logistics can resemble a
+    # normal with wider tails.
+    # If we accept it works as a geometric average, then it might be argued that we are
+    # considering it reflects a non-parametric behavior. Hence the median should be
+    # more significant than the mean, and in order to decide a threshold, we would use 
+    # quantiles.
+    # What follows is partly derived from direct observation of the algorithm's
+    # output:
+    # We will assume that there is a baseline of non-importance: although all genes
+    # are statistically significantly associated with the outcome, their importance
+    # (specificity with regard to the chosen outcomes) needs not be (their statistically
+    # significant association level is not above the base line). These might
+    # be generic genes whose association with the response is non-specific (say, they
+    # are activated/repressed in all responses) or genes which do not contribute additional
+    # relevant information over those already chosen (although with dropout this should
+    # in principle be less likley). Under this assumption, we would be identifying
+    # "specific" genes as those above the baseline.
+    # In other words, this would imply a bimodal distribution: one part (likely the
+    # largest) would be "generic", and a second part, "specific". The median should
+    # lay in the "base line" (assuming the generic part is larger).
+    # If we split the results by the median, then the part above the baseline would be
+    # the "specific" part. Again, if we assume that the "geometric mean" is representative,
+    # this one would have a "binomial" or "poisson" distribution rather than a "normal"
+    # one.
+    # The question remaining is how do we select the most significant genes. All genes
+    # in the second group are "important" for specificity of the response, so setting
+    # an arbitrary threshold would "isolate" the "most relevant" genes. Here, we have
+    # decided to use quantile "0.8" as a cutoff assuming (without actual basis) Pareto's
+    # rule: 80% of the explanation depends on 20% of the variables.
+    #
+	#	These considerations can be easily appreciated in the plots:
+	#		tc.i.dalex.mdl.{plot|hist}.png
+	#			a large majority have dropout levels at or below the
+	#			median value
+	#		tc.i.dalex.mdl.gt.median{plot|hist}.png
+	#			when the low importance variables are removed, the
+	#			remaining data follows a binomial/poisson distribution
+	#			and setting a
+	#
+	# works for dalex and tc
+	# select non-negligible
+	# and remove first value (total)
+	non.neglig <- subset(tc.i.dalex, mean_dropout_loss > median(tc.i.dalex$mean_dropout_loss))[-1,]
+
+	# select most significant among the non-negligible
+	# picking up the ones above the 80% quantile (Pareto's rule)
+	#quantile(non.neglig, 0.8) = 3.472501
+	most.signif <- subset(tc.i.dalex, mean_dropout_loss > quantile(non.neglig$mean_dropout_loss, 0.8))[-1,]
+    #tc.i.dalex <- most.signif
+	if (verbose) {
+		# plot all mean dropout levels (minus initial total sum)
+		as.png(
+			plot(tc.i.dalex$mean_dropout_loss[-1], 
+				 ylab='Mean dropout loss'), 
+			file='impgenes/tc.i.dalex.mdl.plot.png'
+		)
+		
+		# hist of all mean dropout levels (minus initial total sum)
+		as.png(
+			hist(tc.i.dalex$mean_dropout_loss[-1], 
+			     main='Mean dropout loss'), 
+		    file='impgenes/tc.i.dalex.mdl.hist.png'
+		)
+
+		# plot mean dropout levels above median (minus initial total sum)
+		as.png(
+			plot(
+				subset(tc.i.dalex, 
+					   mean_dropout_loss>3.461)$mean_dropout_loss[-1], 
+				ylab='Mean dropout loss > 3.461 (median)'
+				), 
+			file='impgenes/tc.i.dalex.mdl.gt.median.plot.png'
+		)
+
+		# hist of mean dropout levels above median (minus initial total sum)
+		as.png(
+			hist(
+				subset(tc.i.dalex, 
+				       mean_dropout_loss>3.461)$mean_dropout_loss[-1], 
+				main='Mean dropout loss > 3.461 (median)'
+				), 
+			file='impgenes/tc.i.dalex.mdl.gt.median.hist.png'
+			)
+		
+		# repeat for the most important explicative genes
+		# according to Pareto's 80/20 rule
+		as.png(plot(most.signif$mean_dropout_loss, 
+					ylab="Pareto's mean dropout loss >  3.4725 (qantile 80)"), 
+			   file="impgenes/tc.i.dalex.mdl.gt.q80.plot.png")
+
+		as.png(hist(most.signif$mean_dropout_loss, 
+			        main="Pareto's mean dropout loss >  3.4725 (qantile 80)"), 
+			   file="impgenes/tc.i.dalex.mdl.gt.q80.hist.png")
+	}
 
     if (exists(quote(lfc.i.dalex)) && ! is.null(lfc.i.dalex)) {
         edat.i.dalex <- lfc.i.dalex ; colnames(edat.i.dalex) <- c('ensembl_gene_id', 'mean_dropout_loss')
@@ -1879,6 +2105,16 @@ if (test_coturnix) {
         etc.i.dalex <- tc.i.dalex ; colnames(etc.i.dalex) <- c('ensembl_gene_id', 'mean_dropout_loss')
         etc.i.dalex <- enrich_genes(etc.i.dalex, bio.ann)
         write.table(etc.i.dalex, 'impgenes/imp_dalex_tc.txt', sep='\t', row.names=F)
+    }
+    if (exists(quote(tc.i.dalex)) && ! is.null(tc.i.dalex)) {
+        etc.i.dalex <- non.neglig ; colnames(etc.i.dalex) <- c('ensembl_gene_id', 'mean_dropout_loss')
+        etc.i.dalex <- enrich_genes(etc.i.dalex, bio.ann)
+        write.table(etc.i.dalex, 'impgenes/imp_dalex_tc_non_neglig.txt', sep='\t', row.names=F)
+    }
+    if (exists(quote(tc.i.dalex)) && ! is.null(tc.i.dalex)) {
+        etc.i.dalex <- most.signif ; colnames(etc.i.dalex) <- c('ensembl_gene_id', 'mean_dropout_loss')
+        etc.i.dalex <- enrich_genes(etc.i.dalex, bio.ann)
+        write.table(etc.i.dalex, 'impgenes/imp_dalex_tc_most_signif.txt', sep='\t', row.names=F)
     }
 
 
@@ -1902,6 +2138,11 @@ if (test_coturnix) {
         etc.i.vita <- cbind(ensembl_gene_id=names(tc.i.vita), tc.i.vita)
         etc.i.vita <- enrich_genes(etc.i.vita, bio.ann)
         write.table(etc.i.vita, 'impgenes/imp_vita_tc.txt', sep='\t', row.names=F)
+#
+		etc.i.vita <- subset(etc.i.vita, importance > 0)
+        write.table(etc.i.vita, 'impgenes/imp_vita_important_tc.txt', sep='\t', row.names=F)
+		etc.i.vita <- subset(etc.i.vita, importance > quantile(importance, 0.8))
+        write.table(etc.i.vita, 'impgenes/imp_vita_most_signif_tc.txt', sep='\t', row.names=F)
     }
 
     # 14: LASSO
@@ -1952,6 +2193,19 @@ if (test_coturnix) {
         etc.i.xgboost <- cbind(ensembl_gene_id=rownames(tc.i.xgboost), tc.i.xgboost)
         etc.i.xgboost <- enrich_genes(etc.i.xgboost, bio.ann)
         write.table(etc.i.xgboost, 'impgenes/imp_xgboost_tc.txt', sep='\t', row.names=F)
+
+		as.png(plot(etc.i.xgboost$Overall, 
+					ylab='importance', 
+					main="XGBoost importance"),
+			   "impgenes/imp_xgboost_tc.png")
+		#
+		etc.i.xgboost <- subset(etc.i.xgboost, Overall > 0)		
+        write.table(etc.i.xgboost, 'impgenes/imp_xgboost_important_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.xgboost$Overall, 
+					ylab='importance', 
+					main="XGBoost importance"),
+			   "impgenes/imp_xgboost_tc_important.png")
+		#
     }
 
 
@@ -1961,20 +2215,64 @@ if (test_coturnix) {
     clfc.i.ga <- imp_ga(formula, clfc)
     tc.i.ga <- imp_ga(formula, tc)
 
-    if (exists(quote(lfc.i.ga)) && ! is.null(lfc.i.ga)) {
-        edat.i.ga <- data.frame(ensembl_gene_id=(lfc.i.ga))
-        edat.i.ga <- enrich_genes(edat.i.ga, bio.ann)
-        write.table(edat.i.ga, 'impgenes/imp_ga_dat.txt', sep='\t', row.names=F)
-    }
-    if (exists(quote(clfc.i.ga)) && ! is.null(clfc.i.ga)) {
-        eclfc.i.ga <-data.frame(ensembl_gene_id=clfc.i.ga)
-        eclfc.i.ga <- enrich_genes(eclfc.i.ga, bio.ann)
-        write.table(eclfc.i.ga, 'impgenes/imp_ga_datz.txt', sep='\t', row.names=F)
-    }
+#    if (exists(quote(lfc.i.ga)) && ! is.null(lfc.i.ga)) {
+#        edat.i.ga <- data.frame(ensembl_gene_id=(lfc.i.ga))
+#        edat.i.ga <- enrich_genes(edat.i.ga, bio.ann)
+#        write.table(edat.i.ga, 'impgenes/imp_ga_dat.txt', sep='\t', row.names=F)
+#    }
+#    if (exists(quote(clfc.i.ga)) && ! is.null(clfc.i.ga)) {
+#        eclfc.i.ga <-data.frame(ensembl_gene_id=clfc.i.ga)
+#        eclfc.i.ga <- enrich_genes(eclfc.i.ga, bio.ann)
+#        write.table(eclfc.i.ga, 'impgenes/imp_ga_datz.txt', sep='\t', row.names=F)
+#    }
+#    if (exists(quote(tc.i.ga)) && ! is.null(tc.i.ga)) {
+#        etc.i.ga <- data.frame(ensembl_gene_id=tc.i.ga)
+#        etc.i.ga <- enrich_genes(etc.i.ga, bio.ann)
+#        write.table(etc.i.ga, 'impgenes/imp_ga_tc.txt', sep='\t', row.names=F)
+#    }
+
+	# partition
+	ptc.i.ga <- partition_importance(tc.i.ga, "IncNodePurity")
+	# save
     if (exists(quote(tc.i.ga)) && ! is.null(tc.i.ga)) {
-        etc.i.ga <- data.frame(ensembl_gene_id=tc.i.ga)
+        etc.i.ga <- tc.i.ga
+		colnames(etc.i.ga)[1] <- 'ensembl_gene_id'
         etc.i.ga <- enrich_genes(etc.i.ga, bio.ann)
         write.table(etc.i.ga, 'impgenes/imp_ga_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.ga[,2],
+					ylab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc.png")
+		as.png(hist(etc.i.ga[,2],
+					xlab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_hist.png")
+					
+        etc.i.ga <- ptc.i.ga[[2]]
+		colnames(etc.i.ga)[1] <- 'ensembl_gene_id'
+        etc.i.ga <- enrich_genes(etc.i.ga, bio.ann)
+        write.table(etc.i.ga, 'impgenes/imp_ga_non_neglig_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.ga[,2],
+					ylab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_non_neglig.png")
+		as.png(hist(etc.i.ga[,2],
+					xlab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_non_neglig_hist.png")
+
+        etc.i.ga <- ptc.i.ga[[3]]
+		colnames(etc.i.ga)[1] <- 'ensembl_gene_id'
+        etc.i.ga <- enrich_genes(etc.i.ga, bio.ann)
+        write.table(etc.i.ga, 'impgenes/imp_ga_most_signif_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.ga[,2],
+					ylab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_most_signif.png")
+		as.png(hist(etc.i.ga[,2],
+					xlab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_most_signif_hist.png")
     }
 
     
@@ -1983,22 +2281,54 @@ if (test_coturnix) {
     lfc.i.sa <- imp_sa(formula, lfc)
     clfc.i.sa <- imp_sa(formula, clfc)
     tc.i.sa <- imp_sa(formula, tc)
-
+	ptc.i.sa <- partition_importance(tc.i.sa, 2)
 
     if (exists(quote(lfc.i.sa)) && ! is.null(lfc.i.sa)) {
-        edat.i.sa <- data.frame(ensembl_gene_id=(lfc.i.sa))
+        edat.i.sa <- lfc.i.sa ; colnames(edat.i.sa)[1] <- 'ensembl_gene_id'
         edat.i.sa <- enrich_genes(edat.i.sa, bio.ann)
         write.table(edat.i.sa, 'impgenes/imp_sa_dat.txt', sep='\t', row.names=F)
     }
-    if (exists(quote(clfc.i.sa)) && ! is.null(clfc.i.sa)) {
-        eclfc.i.sa <-data.frame(ensembl_gene_id=clfc.i.sa)
+	if (exists(quote(clfc.i.sa)) && ! is.null(clfc.i.sa)) {
+        eclfc.i.sa <- clfc.i.sa ; colnames(eclfc.i.sa)[1] <- 'ensembl_gene_id'
         eclfc.i.sa <- enrich_genes(eclfc.i.sa, bio.ann)
         write.table(eclfc.i.sa, 'impgenes/imp_sa_datz.txt', sep='\t', row.names=F)
     }
     if (exists(quote(tc.i.sa)) && ! is.null(tc.i.sa)) {
-        etc.i.sa <- data.frame(ensembl_gene_id=tc.i.sa)
+        etc.i.sa <- tc.i.sa ; colnames(etc.i.sa)[1] <- 'ensembl_gene_id'
         etc.i.sa <- enrich_genes(etc.i.sa, bio.ann)
         write.table(etc.i.sa, 'impgenes/imp_sa_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.sa[,2],
+					ylab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc.png")
+		as.png(hist(etc.i.sa[,2],
+					xlab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_hist.png")
+
+        etc.i.sa <- ptc.i.sa[[2]] ; colnames(etc.i.sa)[1] <- 'ensembl_gene_id'
+        etc.i.sa <- enrich_genes(etc.i.sa, bio.ann)
+        write.table(etc.i.sa, 'impgenes/imp_sa_non_neglig_tc.txt', sep='\t', row.names=F)
+        as.png(plot(etc.i.sa[,2],
+					ylab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_non_neglig.png")
+		as.png(hist(etc.i.sa[,2],
+					xlab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_non_neglig_hist.png")
+
+		etc.i.sa <- ptc.i.sa[[3]] ; colnames(etc.i.sa)[1] <- 'ensembl_gene_id'
+        etc.i.sa <- enrich_genes(etc.i.sa, bio.ann)
+        write.table(etc.i.sa, 'impgenes/imp_sa_most_signif_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.sa[,2],
+					ylab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_most_signif.png")
+		as.png(hist(etc.i.sa[,2],
+					xlab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_most_signif_hist.png")
     }
 
 
@@ -2213,7 +2543,13 @@ if (test_gallus2) {
         etc.i.lvq <- enrich_genes(etc.i.lvq, bio.ann, 
 		                          'gene.name', 'entrezgene_accession')
         write.table(etc.i.lvq, 'impgenes/imp_lvq_tc.txt', sep='\t', row.names=F)
-    }
+ 
+    	threshold <- 0.8
+		# select genes with imp > 0.8 in columns 2 to 7 (cell types)
+		rows.with.imp.gene <- apply(etc.i.lvq[,2:7], 1, function(x) any(x > threshold))
+		etc.i.lvq.gt0.8 <- etc.i.lvq[rows.with.imp.gene, ]
+    	write.table(etc.i.lvq.gt0.8, 'impgenes/imp_lvq_most_signif_tc.txt', sep='\t', row.names=F)
+   }
 	
 	
 	#### Boruta with RF
@@ -2295,7 +2631,7 @@ if (test_gallus2) {
 	
 	if (exists(quote(tc.i.rf)) && ! is.null(tc.i.rf)) {
 	    etc.i.rf <- tc.i.rf[rowSums(tc.i.rf) != 0,]
-		etc.i.rf <- cbind(gene.name=rownames(etc.i.rf), etc.i.rf)
+		etc.i.rf <- cbind(gene.name=rownames(etc.i.rf), importance=etc.i.rf)
         etc.i.rf <- enrich_genes(etc.i.rf, bio.ann,
 								  'gene.name', 'entrezgene_accession')
         write.table(etc.i.rf, 'impgenes/imp_rf_tc.txt', sep='\t', row.names=F)
@@ -2309,6 +2645,11 @@ if (test_gallus2) {
 								  'gene.name', 'entrezgene_accession')
         write.table(etc.i.rfr, 'impgenes/imp_rangerRF_tc.txt', sep='\t', row.names=F)
     }
+	#
+	nn <- subset(etc.i.rf, importance > 0)
+    write.table(nn, 'impgenes/imp_rf_non_neglig_tc.txt', sep='\t', row.names=F)
+	ms <- subset(nn, importance > quantile(importance, 0.8))
+    write.table(ms, 'impgenes/imp_rf_most_signif_tc.txt', sep='\t', row.names=F)
 	
 	
 	### regularized random forest
@@ -2316,8 +2657,9 @@ if (test_gallus2) {
 	tc.i.rrf <- imp_rrf(formula , data=tc)
 	
 	if (exists(quote(tc.i.rrf)) && ! is.null(tc.i.rrf)) {
-	    tc.i.rrf <- tc.i.rrf[rowSums(tc.i.rrf) != 0,]
-        etc.i.rrf <- cbind(gene.name=rownames(tc.i.rrf), tc.i.rrf)
+		# when doing categorical RRF we get an importance column for each category
+	    etc.i.rrf <- tc.i.rrf[rowSums(tc.i.rrf) != 0,]
+        etc.i.rrf <- cbind(gene.name=rownames(etc.i.rrf), etc.i.rrf)
         etc.i.rrf <- enrich_genes(etc.i.rrf, bio.ann,
 								  'gene.name', 'entrezgene_accession')
         write.table(etc.i.rrf, 'impgenes/imp_rrf_tc.txt', sep='\t', row.names=F)
@@ -2337,30 +2679,192 @@ if (test_gallus2) {
 	# RF fails because of the gene names
 	# we can try to "fix" them, do the calculation and "unfix" them
 	tcx <- tc
-	names(tcx) <- c('sample', paste("V", seq(2, length(names(tc))), sep=''))
-	o.n <- data.frame(old=names(tc), new=names(tcx)
+	names(tcx) <- c('sample', as.character(sprintf("%08d", 2:length(names(tc)))))
 	# DALEX runs with RF, but as it is a lot slower than ranger
 	# and DALEX makes many repeated calculations, it can take a
 	# very long time: with 100CPUs this one took about one week
 	# and a half to run!!!
 	tcx.i.dalex <- imp_dalex(formula, data=tcx, method="RF")
+	
 	# we'd get a dataframe with first column being variable 
 	# pseudo-names. We need to match them to o.n
-	# and now recover old names
-	
+	# and now recover old names while keeping the original order
+	o.n <- data.frame(old=names(tc), new=names(tcx))
+	o.n <- rbind(o.n, '_full_model_', ' _full_model_')
+    o.n <- rbind(o.n, '_baseline_', '_baseline_')
+	# save row numbering to be able to recover the order
+    k <- cbind(n=rownames(tcx.i.dalex), tcx.i.dalex)
+	# recover old names
+    n <- merge(k, o.n, by.x='variable', by.y='new', all.x=T)
+	n <- n[order(as.numeric(n$n)), ]
+	# and finally extract the variable and importance values
+    tc.i.dalex <- data.frame(variable=n$old, mean_dropout_loss=n$mean_dropout_loss)
+    # and now that we have recovered a suitable tc.i.dalex, clean up
+	rm(k); rm(n); rm(o.n); rm(tcx); rm(tcx.i.dalex)
+	# and now we have the expected tc.i.dalex
+
+	# THIS IS ARBITRARY SO FAR AS WE CAN TELL
+    #
+    # The Dropout Learning Algorithm
+	# Pierre Baldi and Peter Sadowski, Artif Intell. 2014 May; 210: 78?122. 
+    #
+    # Dropout is typically used for training Neural Networks. It consists in
+    # "dropping out" (a) different random node(s) in different iterations of the
+    # training. 
+    # When we use it to "identify importance" we are dropping out a random variable 
+    # in different iterations of the estimation, as such it is similar to a shallow
+    # neural network and so, in principle, we may expect imilar behavior. 
+    # It has been reported that for a single unit, in a shallow, one-layer, neural
+    # network with a logistic sigmoidal function dropout works like a kind of
+    # "geometric" ensemble averaging [REF ABOVE]. 
+    # It is worth noting that the family of functions with dropout properties are
+    # either constant f(x) = K, or all logistic functions. Logistics can resemble a
+    # normal with wider tails.
+    # If we accept it works as a geometric average, then it might be argued that we are
+    # considering it reflects a non-parametric behavior. Hence the median should be
+    # more significant than the mean, and in order to decide a threshold, we would use 
+    # quantiles.
+    # What follows is partly derived from direct observation of the algorithm's
+    # output:
+    # We will assume that there is a baseline of non-importance: although all genes
+    # are statistically significantly associated with the outcome, their importance
+    # (specificity with regard to the chosen outcomes) needs not be (their statistically
+    # significant association level is not above the base line). These might
+    # be generic genes whose association with the response is non-specific (say, they
+    # are activated/repressed in all responses) or genes which do not contribute additional
+    # relevant information over those already chosen (although with dropout this should
+    # in principle be less likley). Under this assumption, we would be identifying
+    # "specific" genes as those above the baseline.
+    # In other words, this would imply a bimodal distribution: one part (likely the
+    # largest) would be "generic", and a second part, "specific". The median should
+    # lay in the "base line" (assuming the generic part is larger).
+    # If we split the results by the median, then the part above the baseline would be
+    # the "specific" part. Again, if we assume that the "geometric mean" is representative,
+    # this one would have a "binomial" or "poisson" distribution rather than a "normal"
+    # one.
+    # The question remaining is how do we select the most significant genes. All genes
+    # in the second group are "important" for specificity of the response, so setting
+    # an arbitrary threshold would "isolate" the "most relevant" genes. Here, we have
+    # decided to use quantile "0.8" as a cutoff assuming (without actual basis) Pareto's
+    # rule: 80% of the explanation depends on 20% of the variables.
+    #
+	#	These considerations can be easily appreciated in the plots:
+	#		tc.i.dalex.mdl.{plot|hist}.png
+	#			a large majority have dropout levels at or below the
+	#			median value
+	#		tc.i.dalex.mdl.gt.median{plot|hist}.png
+	#			when the low importance variables are removed, the
+	#			remaining data follows a binomial/poisson distribution
+	#			and setting a
+	#
+	# works for dalex and tc
+	# select non-negligible
+	# and remove first value (total)
+	non.neglig <- subset(tc.i.dalex, mean_dropout_loss > median(tc.i.dalex$mean_dropout_loss))[-1,]
+
+	# select most significant among the non-negligible
+	# picking up the ones above the 80% quantile (Pareto's rule)
+	#quantile(non.neglig, 0.8) = 3.472501
+	most.signif <- subset(tc.i.dalex, mean_dropout_loss > quantile(non.neglig$mean_dropout_loss, 0.8))[-1,]
+    #tc.i.dalex <- most.signif
+	if (verbose) {
+		# plot all mean dropout levels (minus initial total sum)
+		as.png(
+			plot(tc.i.dalex$mean_dropout_loss[-1], 
+				 ylab='Mean dropout loss'), 
+			file='impgenes/tc.i.dalex.mdl.plot.png'
+		)
+		
+		# hist of all mean dropout levels (minus initial total sum)
+		as.png(
+			hist(tc.i.dalex$mean_dropout_loss[-1], 
+			     main='Mean dropout loss'), 
+		    file='impgenes/tc.i.dalex.mdl.hist.png'
+		)
+
+		# plot mean dropout levels above median (minus initial total sum)
+		as.png(
+			plot(
+				subset(tc.i.dalex, 
+					   mean_dropout_loss>3.461)$mean_dropout_loss[-1], 
+				ylab='Mean dropout loss > 3.461 (median)'
+				), 
+			file='impgenes/tc.i.dalex.mdl.gt.median.plot.png'
+		)
+
+		# hist of mean dropout levels above median (minus initial total sum)
+		as.png(
+			hist(
+				subset(tc.i.dalex, 
+				       mean_dropout_loss>3.461)$mean_dropout_loss[-1], 
+				main='Mean dropout loss > 3.461 (median)'
+				), 
+			file='impgenes/tc.i.dalex.mdl.gt.median.hist.png'
+			)
+		
+		# repeat for the most important explicative genes
+		# according to Pareto's 80/20 rule
+		as.png(plot(most.signif$mean_dropout_loss, 
+					ylab="Pareto's mean dropout loss >  3.4725 (qantile 80)"), 
+			   file="impgenes/tc.i.dalex.mdl.gt.q80.plot.png")
+
+		as.png(hist(most.signif$mean_dropout_loss, 
+			        main="Pareto's mean dropout loss >  3.4725 (qantile 80)"), 
+			   file="impgenes/tc.i.dalex.mdl.gt.q80.hist.png")
+	}
+
     if (exists(quote(tc.i.dalex)) && ! is.null(tc.i.dalex)) {
-        etc.i.dalex <- tc.i.dalex ; colnames(etc.i.dalex) <- c('ensembl_gene_id', 'mean_dropout_loss')
-        etc.i.dalex <- enrich_genes(etc.i.dalex, bio.ann)
+        etc.i.dalex <- tc.i.dalex[order(tc.i.dalex$mean_dropout_loss, decreasing=T), ]
+		colnames(etc.i.dalex) <- c('gene.name', 'mean_dropout_loss')
+        etc.i.dalex <- enrich_genes(etc.i.dalex, bio.ann, 
+		                             'gene.name', 'entrezgene_accession')
         write.table(etc.i.dalex, 'impgenes/imp_dalex_tc.txt', sep='\t', row.names=F)
     }
+    if (exists(quote(tc.i.dalex)) && ! is.null(tc.i.dalex)) {
+        etc.i.dalex <- non.neglig[order(non.neglig$mean_dropout_loss, decreasing=T), ]
+		colnames(etc.i.dalex) <- c('gene.name', 'mean_dropout_loss')
+        etc.i.dalex <- enrich_genes(etc.i.dalex, bio.ann, 
+		                             'gene.name', 'entrezgene_accession')
+        write.table(etc.i.dalex, 'impgenes/imp_dalex_tc_non_neglig.txt', sep='\t', row.names=F)
+    }
+    if (exists(quote(tc.i.dalex)) && ! is.null(tc.i.dalex)) {
+        etc.i.dalex <- most.signif [order(most.signif$mean_dropout_loss, decreasing=T), ]
+		colnames(etc.i.dalex) <- c('gene.name', 'mean_dropout_loss')
+        etc.i.dalex <- enrich_genes(etc.i.dalex, bio.ann, 
+		                             'gene.name', 'entrezgene_accession')
+        write.table(etc.i.dalex, 'impgenes/imp_dalex_tc_most_signif.txt', sep='\t', row.names=F)
+    }
+
 
 	### vita
 	#
-	# XXX object 'TRNAD-GUC_1' not found
+	# XXX object 'TRNAD-GUC_1' not found. It is the same problem
+	# as with DALEX, and we should do similar gimnastics to use 'rf'
+	# but we can try 'rangerRF.dep.var' and get an equivalent result.
 	#tc.i.vita <- imp_vita(formula , data=tc)
 	tc.i.vita <- imp_vita(dep.var='sample', data=tc, method='rangerRF.dep.var')
-	# SAVE ME (but no need)
+
+	# we might consider removing variables with |importance| == 0
+	# e.g.
+	# etc.i.vita[ abs(etc.i.vita$importance) > 10e-9, ]
+	# [1] 1188    2
+	# min(etc.i.vita[ abs(etc.i.vita$importance) > 10e-9, 'importance'])
+	# [1] -0.0012
+	# max(etc.i.vita[ abs(etc.i.vita$importance) > 10e-9, 'importance'])
+	# [1] 0.002
 	
+    if (exists(quote(tc.i.vita)) && ! is.null(tc.i.vita)) {
+		etc.i.vita <- data.frame(gene.name=names(tc.i.vita), importance=tc.i.vita)
+        etc.i.vita <- enrich_genes(etc.i.vita, bio.ann, 
+								 'gene.name', 'entrezgene_accession')
+        write.table(etc.i.vita, 'impgenes/imp_vita_tc.txt', sep='\t', row.names=F)
+
+		etc.i.vita <- subset(etc.i.vita, importance > 0)
+        write.table(etc.i.vita, 'impgenes/imp_vita_non_neglig_tc.txt', sep='\t', row.names=F)
+		etc.i.vita <- subset(etc.i.vita, importance > quantile(importance, 0.8))
+        write.table(etc.i.vita, 'impgenes/imp_vita_most_signif_tc.txt', sep='\t', row.names=F)
+
+    }
 	
 	### LASSO
 	#
@@ -2397,6 +2901,18 @@ if (test_gallus2) {
         etc.i.xgboost <- enrich_genes(etc.i.xgboost, bio.ann, 
 								 'gene.name', 'entrezgene_accession')
         write.table(etc.i.xgboost, 'impgenes/imp_xgboost_tc.txt', sep='\t', row.names=F)
+
+		as.png(plot(etc.i.xgboost$Overall, 
+					ylab='importance', 
+					main="XGBoost importance"),
+			   "impgenes/imp_xgboost_tc.png")
+		#
+		etc.i.xgboost <- subset(etc.i.xgboost, Overall > 0)
+        write.table(etc.i.xgboost, 'impgenes/imp_xgboost_important_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.xgboost$Overall, 
+					ylab='importance', 
+					main="XGBoost importance"),
+			   "impgenes/imp_xgboost_tc_important.png")
     }
 	
 	
@@ -2404,23 +2920,98 @@ if (test_gallus2) {
 	#
 	tc.i.ga <- imp_ga(formula, tc)
 	
-    if (exists(quote(tc.i.ga)) && ! is.null(tc.i.ga)) {
-        etc.i.ga <- data.frame(gene.name=tc.i.ga)
+	ptc.i.ga <- partition_importance(tc.i.ga, "MeanDecreaseGini")
+	if (exists(quote(tc.i.ga)) && ! is.null(tc.i.ga)) {
+        etc.i.ga <- tc.i.ga
+		colnames(etc.i.ga)[1] <- 'gene.name'
         etc.i.ga <- enrich_genes(etc.i.ga, bio.ann, 
 								 'gene.name', 'entrezgene_accession')
         write.table(etc.i.ga, 'impgenes/imp_ga_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.ga[,2],
+					ylab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc.png")
+		as.png(hist(etc.i.ga[,2],
+					xlab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_hist.png")
+
+        etc.i.ga <- ptc.i.ga[[2]]
+		colnames(etc.i.ga)[1] <- 'gene.name'
+        etc.i.ga <- enrich_genes(etc.i.ga, bio.ann, 
+								 'gene.name', 'entrezgene_accession')
+        write.table(etc.i.ga, 'impgenes/imp_ga_non_neglig_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.ga[,2],
+					ylab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_non_neglig.png")
+		as.png(hist(etc.i.ga[,2],
+					xlab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_non_neglig_hist.png")
+
+        etc.i.ga <- ptc.i.ga[[3]]
+		colnames(etc.i.ga)[1] <- 'gene.name'
+        etc.i.ga <- enrich_genes(etc.i.ga, bio.ann, 
+								 'gene.name', 'entrezgene_accession')
+        write.table(etc.i.ga, 'impgenes/imp_ga_most_signif_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.ga[,2],
+					ylab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_most_signif.png")
+		as.png(hist(etc.i.ga[,2],
+					xlab=names(etc.i.ga)[2],
+					main="Genetic Algorithm"),
+					"impgenes/imp_ga_tc_most_signif_hist.png")
     }
 	
 
 	#### simulated annealing
 	#
 	tc.i.sa <- imp_sa(formula, tc)
-	
+	ptc.i.sa <- partition_importance(tc.i.sa, 2)
+
 	if (exists(quote(tc.i.sa)) && ! is.null(tc.i.sa)) {
-        etc.i.sa <- data.frame(gene.name=tc.i.sa)
+        etc.i.sa <- tc.i.sa ; colnames(etc.i.sa)[1] <- 'gene.name'
         etc.i.sa <- enrich_genes(etc.i.sa, bio.ann, 
 								 'gene.name', 'entrezgene_accession')
         write.table(etc.i.sa, 'impgenes/imp_sa_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.sa[,2],
+					ylab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc.png")
+		as.png(hist(etc.i.sa[,2],
+					xlab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_hist.png")
+
+        etc.i.sa <- ptc.i.sa[[2]]
+		colnames(etc.i.sa)[1] <- 'gene.name'
+        etc.i.sa <- enrich_genes(etc.i.sa, bio.ann, 
+								 'gene.name', 'entrezgene_accession')
+        write.table(etc.i.sa, 'impgenes/imp_sa_non_neglig_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.sa[,2],
+					ylab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_non_neglig.png")
+		as.png(hist(etc.i.sa[,2],
+					xlab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_non_neglig_hist.png")
+
+        etc.i.sa <- ptc.i.sa[[3]]
+		colnames(etc.i.sa)[1] <- 'gene.name'
+        etc.i.sa <- enrich_genes(etc.i.sa, bio.ann, 
+								 'gene.name', 'entrezgene_accession')
+        write.table(etc.i.sa, 'impgenes/imp_sa_most_signif_tc.txt', sep='\t', row.names=F)
+		as.png(plot(etc.i.sa[,2],
+					ylab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_most_signif.png")
+		as.png(hist(etc.i.sa[,2],
+					xlab=names(etc.i.sa)[2],
+					main="Simulated Annealing"),
+					"impgenes/imp_sa_tc_most_signif_hist.png")
     }
 	
 
@@ -2759,26 +3350,56 @@ if (test_gallus2) {
 	head(mtc.desc[[1]]$row, 4)
 	# dimension 1 on columns (genes)
 	head(mtc.desc[[1]]$col, 4)
-	#
-	# etc for the rest
+	# etc for the rest.
 	
-	# having row%coord and col$coord we could
-	#	gw <- list(names(row.coord)=c())
-	#   min_dist_i_j <- +Inf
-	#	for (i in names(col.coord) {	# for each gene
-	#		for (j in names(row.coord) { # for each sample type
-	#			dist_ij = calc_dist_ij(i, j, row.coord, col.coord, dims)
-	#			if (dist_ij < min_dist_i_j) min_dist_i_j <- dist_i_j
-	#		}
-	#		#add gene i to gravity well of cell j
-	#		gw[[j]] <- c(gw[[j]], i)
-	#	}
-	# 	calc_dist_ij(i, j, row.coord, col.coord, dims) {
-	#		coords_i <- col.coord[ , dims]
-	#		coords_j <- row.coord[ , dims]
-	#		d <- sqrt(sum(sqrt(coords_i - coords_j)))
-	#		return(d)
-	#	}
+	# prepare a minimal plot
+	as.png( {
+		plot(col$coord)
+		text(row$coord, labels=rownames(row$coord), 
+			col='red', cex=2, vfont=c("serif", "bold"))
+		points(row$coord, col='yellow')
+	}, file='ca/ca_dim_1+2.png')
+	
+	# having row$coord and col$coord we can save genes by cells/dims
+	row.coord=row$coord
+	col.coord=col$coord
+	#ca_assign_cols_to_rows(col.coord[c('LOC107049418', 'IFNG'),], row.coord, 1)
+	#gw <- ca_assign_cols_to_rows(col.coord, row.coord, 1)
+	#for (i in names(gw)) cat(i, dim(gw[[i]]), '\n')
+	for (i in 1:5) {
+	    # get groups in that dimension
+		cat('DIM', i, '\n')
+		gw <- ca_assign_cols_to_rows(col.coord, row.coord, i)
+		for (j in names(gw)) {
+			cat('    GRP', j, dim(gw[[j]]), '\n')
+			grp_genes <- gw[[j]]
+			colnames(grp_genes) <- c('gene', 'distance')
+			grp_genes <- enrich_genes(grp_genes, bio.ann, 
+									'gene', 'entrezgene_accession')
+			out <- paste('ca/CA_DIM_', i, '_', j, '.tab', sep='')
+			write.table(grp_genes, file=out, row.names=F)
+		}    
+	}
+	gw <- ca_assign_cols_to_rows(col.coord, row.coord, 1:2)
+		for (j in names(gw)) {
+			cat('    GRP', j, dim(gw[[j]]), '\n')
+			grp_genes <- gw[[j]]
+			colnames(grp_genes) <- c('gene', 'distance')
+			grp_genes <- enrich_genes(grp_genes, bio.ann, 
+									'gene', 'entrezgene_accession')
+			out <- paste('ca/CA_DIM_1+2_', j, '.tab', sep='')
+			write.table(grp_genes, file=out, row.names=F)
+		}    
+	gw <- ca_assign_cols_to_rows(col.coord, row.coord, c(2, 4))
+		for (j in names(gw)) {
+			cat('    GRP', j, dim(gw[[j]]), '\n')
+			grp_genes <- gw[[j]]
+			colnames(grp_genes) <- c('gene', 'distance')
+			grp_genes <- enrich_genes(grp_genes, bio.ann, 
+									'gene', 'entrezgene_accession')
+			out <- paste('ca/CA_DIM_2+4_', j, '.tab', sep='')
+			write.table(grp_genes, file=out, row.names=F)
+		}    
 	#
 	
 	
@@ -2865,7 +3486,9 @@ if (test_gallus2) {
 	}, "dca/mtc.dca.png")
 	#
 	# actually this brings all the groups together, which makes it
-	# unattractive in our case.
+	# unattractive in our case. Since it only seems to distort the
+	# ordination space, and interpretation becomes more difficult,
+	# we will not pursue it further. 
 	#
 
 
@@ -2893,4 +3516,19 @@ if (test_gallus2) {
 	# results of CA and CCA become similar, so its advantages may be 
 	# limited in our case.
 
-}
+
+#####
+CLUSTERING
+
+library(dplyr)
+library(pheatmap)
+
+tc <- read.table('normalized_counts.tab', header=T)
+
+new_columns <- gsub("\\.sorted\\.bam$", "", colnames(tc))
+
+# Asigna los nuevos nombres de columnas al data frame
+colnames(tc) <- new_columns
+
+# Verifica los nuevos nombres de las columnas
+colnames(tc)

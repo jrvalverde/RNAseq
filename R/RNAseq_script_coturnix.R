@@ -102,22 +102,22 @@ rnaseq.out <- 'rnaseq-test'
 org.package <- "org.Cjaponica.eg.db"
 KEGG_org <- 'cjo'
 
-#reference <- "GRCg6a"			# gallus
-#reference <- 'Gg_GRGc7b'
-#release <- "GRCg6a"
-#target.organism <- 'Gallus_gallus'
-#ncbi.taxid <- '9031'
-#genus <- 'Gallus'
-#species <- 'gallus'
-#version <- '6a'
-#alignment.dir <- 'gg-aln-Rsubread-6a'
-#ens.db.pkg <- "EnsDb.Ggallus"
-#ens.version <- '106'
-#mart.name <- 'ggallus_gene_ensembl'
-#rnaseq.out <- 'rnaseq-6a'
-#org.package <- "org.Ggallus.eg.db"
-#org.package <- "org.Gg.eg.db"
-#KEGG_org <- 'gga'
+reference <- "GRCg6a"			# gallus
+reference <- 'Gg_GRGc7b'
+release <- "GRCg6a"
+target.organism <- 'Gallus_gallus'
+ncbi.taxid <- '9031'
+genus <- 'Gallus'
+species <- 'gallus'
+version <- '6a'
+alignment.dir <- 'gg-aln-Rsubread-6a'
+ens.db.pkg <- "EnsDb.Ggallus"
+ens.version <- '106'
+mart.name <- 'ggallus_gene_ensembl'
+rnaseq.out <- 'rnaseq-6a'
+org.package <- "org.Ggallus.eg.db"
+org.package <- "org.Gg.eg.db"
+KEGG_org <- 'gga'
 
 
 n.genes <- 1000		# number of top genes to revise
@@ -1949,7 +1949,7 @@ topTags(lrt)
 # Before going forward, let us prepare the annotation we will use:
 # we now want to extract some annotation 
 # to add useful information to our genes
-ens.ann <- ensembldb::select(ens.db, 
+ens.ann <- AnnotationDbi::select(ens.db, 
                   column='GENID', keytype= 'GENEID', keys=rownames(fit), 
                   columns= c('SEQNAME', 'SYMBOL', 'DESCRIPTION', # no longer available
                              'GENENAME', 'GENEID', 'ENTREZID', # empty
@@ -2334,6 +2334,11 @@ colData$PFU <- as.factor(colData$PFU)
 colData$Src <- as.factor(colData$Src)
 colData$viral.dose <- as.factor(colData$viral.dose)
 
+#Gg
+#colData$sample <- as.factor(colData$sample)
+#colData$cell.type <- as.factor(colData$cell.type)
+#colData$infection <- as.factor(colData$infection)
+
 # SAVE NORMALIZED COUNTS FOR AI ANALYSIS
 #
 # We do not need normalized counts for differential gene expression
@@ -2380,6 +2385,7 @@ write.table(normalized_counts, file="normalized_counts.tab",
 # RUN DGEseq2 DGE analysis
 
 name <- paste(folder, "DESeq2/dds.DESeq2.PFU", sep='/')
+#name <- paste(folder, "DESeq2/dds.DESeq2.sample", sep='/')
 
 if ( ! file.exists(paste(name, "rds", sep='.')) ) {
 
@@ -2404,6 +2410,7 @@ print(resultsNames(dds.pfu))
 
 
 name <- paste(folder, "DESeq2/dds.DESeq2.viral.dose", sep='/')
+#name <- paste(folder, "DESeq2/dds.DESeq2.infection", sep='/')
 if ( ! file.exists(paste(name, "rds", sep='.')) ) {
 
     dds.vd <- DESeqDataSetFromMatrix(countData, colData,  design=~viral.dose, tidy=F)
@@ -2425,7 +2432,15 @@ if ( ! file.exists(paste(name, "rds", sep='.')) ) {
 cat("DESeq2 analysis produced the following fit")
 print(resultsNames(dds.vd))
 
-# use ens.ann from above
+# use ens.ann
+ens.ann <- ensembldb::select(ens.db, 
+               column='GENEID', 
+               keytype= 'GENEID', keys=rownames(dds.pfu), 
+               columns= c('SEQNAME', 'SYMBOL', 'DESCRIPTION', # no longer available
+                          'GENENAME', 'GENEID', 'ENTREZID', # empty
+                          'TXNAME', 'TXID', 'TXBIOTYPE', # these make the call fail
+                          'PROTEINID', 'UNIPROTID' # no longer available
+                         ))
 
 ens.ann.1 <- ens.ann[ ! duplicated(ens.ann$GENEID), ]
 
@@ -2492,14 +2507,16 @@ dds_compare_annotate_save <- function(dds,
 
 
 dds <- dds.pfu		# comparisons by column "PFU"
+column <- 'PFU'
+target <- colData
 
-for (a in levels(as.factor(target$PFU)) ) {
-    for (b in levels(as.factor(target$PFU)) ) {
+for (a in levels(as.factor(target[ , column])) ) {
+    for (b in levels(as.factor(target[ , column])) ) {
         print(paste(a, b))
         if (a == b) next
         dds_compare_annotate_save( 
                         dds,
-                        column="PFU",
+                        column=column,
                         x=a, y=b,
                         filterFun=ihw, alpha=0.01,
                         ensembl.ann=ens.ann.1,
@@ -2669,36 +2686,47 @@ dds_compare_select_plot_annotate_save <- function(dds,
                 signif.annot=srt.df))
 }
 
-# Generating this takes long. We should save it and load from file
-# when we run the script
-ds.data <- list()
-#x <- 0
-contr <- "PFU"
-grps <- levels(colData[ , contr ])
-for (a in grps) {
-    for (b in grps) {
-        print(paste(a, b))
-        if (a == b) next
-        res <- dds_compare_select_plot_annotate_save( 
-                        dds, contr,
-                        x=a, y=b,
-                        filterFun=ihw, alpha=0.01,
-                        ensembl.ann=ens.ann.1,
-                        biomart.ann=bm.annot.1,
-                        outDir=folder,
-						#save=TRUE
-                        )
-        print(names(res))
-	name <- paste(contr, "_", a, "_", b, sep='')
-        #x <- x + 1
-        #ds.data[[x]] <- res
-        ds.data[[name]] <- res
-        #names(ds.data)[x] <- name
-        #stop()
-    }
-}
-print(names(ds.data))
 
+out.file <- paste(folder, '/DESeq2/ds.data.PFU.RData', sep='')
+#out.file <- paste(folder, '/DESeq2/ds.data.sample.RData', sep='')
+
+if ( ! file.exists(out.file)) {
+	# Generating this takes long. We should save it and load from file
+	# when we run the script
+	ds.data <- list()
+	#x <- 0
+	contr <- "PFU"
+	# contr <- 'sample'
+	grps <- levels(colData[ , contr ])
+	for (a in grps) {
+    	for (b in grps) {
+        	print(paste(a, b))
+        	if (a == b) next
+        	res <- dds_compare_select_plot_annotate_save( 
+                        	dds, contr,
+                        	x=a, y=b,
+                        	filterFun=ihw, alpha=0.01,
+                        	ensembl.ann=ens.ann.1,
+                        	biomart.ann=bm.annot.1,
+                        	outDir=folder,
+							#save=TRUE
+                        	)
+        	print(names(res))
+		name <- paste(contr, "_", a, "_", b, sep='')
+        	#x <- x + 1
+        	#ds.data[[x]] <- res
+        	ds.data[[name]] <- res
+        	#names(ds.data)[x] <- name
+        	#stop()
+    	}
+	}
+	print(names(ds.data))
+
+	save(ds.data, file=out.file)
+
+} else {
+    load(out.file)
+}
 
 # -------------------------------
 # Do Gene Set Enrichment Analysis
@@ -3410,9 +3438,9 @@ options(width=80)
 
 # This should go up above all 
 references <- c('wt')		# Cj
-#references <- c('wt', 'PC')	# Gg
-#contrasts.column <- "Src"
 contrasts.column <- "PFU"
+#references <- c('wt', 'PC')	# Gg
+#contrasts.column <- "sample"
 
 for (ref in references) {
     # Find genes that change w.r.t. the reference strain
@@ -3423,6 +3451,7 @@ for (ref in references) {
     name <- paste(contrasts.column, ref, levels(as.factor(target[ , contrasts.column]))[1], sep='_')
     common <- rownames(ds.data[[name]]$signif)
     for (i in levels(as.factor(target[ , contrasts.column]))) {
+    for (i in 1:length(levels(as.factor(target[ , contrasts.column])))) {
         if (i == ref) next
         name <- paste(ccol_ref, i, sep='_')
         print(name)
@@ -3575,7 +3604,7 @@ for (ref in references) {
     # for gg
     dbscan.eps <- 1.5
     # for Cj
-    dbscan.eps <- 
+    #dbscan.eps <- 0.8
 	# 0.8
 
 

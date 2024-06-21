@@ -1430,6 +1430,17 @@ GO_KEGG_clusterProfiler <- function(ann.shrunk.lfc,
 
     s.ranks <- sort(ranks, decreasing=T)
     
+    ens.en <- bitr(ens.up, fromType = "ENSEMBL",
+                  toType = c("ENTREZID"),
+                  OrgDb = ovis)
+    ego<-enrichGO(gene = ens.up,
+                    OrgDb = ovis,
+                    ont = "ALL",
+                    keyType = "GENEID",
+                    pAdjustMethod = "fdr",
+                    pvalueCutoff = 1,
+                    readable = TRUE)
+    
     ### G O annotation
     #
     gse <- gseGO(geneList=s.ranks, 
