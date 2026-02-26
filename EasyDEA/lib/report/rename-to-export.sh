@@ -1,7 +1,14 @@
 prefix="sample_"
 OLDWAY="FALSE"
 
-cp -Ru max.size=500/* max_grp_size_500/
+echo "$0"
+pwd
+ls
+
+# sanity check
+if [ ! -d max.size=500 ] ; then exit 1 ; fi
+
+cp -Rlu max.size=500/* max_grp_size_500/
 
 cd max_grp_size_500
 

@@ -1,4 +1,33 @@
 
+
+# this is ONLY for INTERNAL use to do debugging during development
+# it is DIRECTLY executed (not a function call)
+# SET IT TO FALSE BEFORE RELEASE!!!
+DEBUG_TRACEBACK <- FALSE
+if (DEBUG_TRACEBACK) {
+    # set various debugging aids
+    options(show.error.locations=T)
+    # we could use traceback() as it, but then it would look up for
+    # a .Traceback object not available in scripts, however, using
+    # argument x to traceback(x), with a non-zero integer value 
+    # (indicating the number of calls to skip in the stack), 
+    # C-level functions (R_GetTraceback) are called to investigate 
+    # the call stack instead of looking in .Traceback.
+    #
+    # skip the call to traceback itself
+    on.exit(traceback(1))   
+    # skip the call to traceback itself and the call to the anonymous
+    # function that invokes traceback; returning success and continuing
+#    options(error=function() traceback(2))
+    # skip the call to traceback itself and the call to the anonymous
+    # function that invokes traceback, exit returning failure
+#    options(error=function() { 
+#        traceback(2); 
+#        if(!interactive()) 
+#            quit("no", status = 1, runLast = FALSE) 
+#    })
+}
+
 #' getScriptPath()
 #'
 #' Get the name of the main script being run. This is FAR from ideal: it relies
@@ -26,14 +55,19 @@
 getScriptPath <- function() {
      
     # this works if we were called with 'source()'
+    # (used directly in interactive mode it will return "")
     src.path <- getSrcFilename(function() {}, full.names=T)
     if (! is.null(src.path) && src.path != ""){
         return(src.path)
 	}
-    # this works for Rscript, it may match more than one path
-    # if Rscript was used with several --file= arguments, in
+    # this also works for Rscript, butt may match more than one 
+    # path if Rscript was used with several --file= arguments, in
     # which case we will return *only* the first one
     cmd.args <- commandArgs()
+    # With R and Rscript it will return "/usr/lib/R/bin/exec/R" 
+    # as its first argument; the script name(s) will appear as 
+    # "--file=" argument(s), so we need to find them, knowing
+    # we might be running from not the first one of them
     m <- regexpr("(?<=^--file=).+", cmd.args, perl=TRUE)
     script.path <- regmatches(cmd.args, m)
     if (length(script.path) >= 1) return(script.path[1])
@@ -49,6 +83,120 @@ getScriptPath <- function() {
     return (sys.frame(1)$ofile)
 }
 
+
+# Source - https://stackoverflow.com/a/36075028
+# Posted by Jerry T
+# Retrieved 2026-02-06, License - CC BY-SA 3.0
+#' get current source file dir
+#' @param
+#' @return
+#' @examples
+#' works with source() or in RStudio Run selection
+#' @export
+getsd <- function() {
+    # http://stackoverflow.com/questions/1815606/rscript-determine-path-of-the-executing-script
+    # must work with source()
+    if (!is.null(res <- .thisfile_source())) dirname(res)
+    else if (!is.null(res <- .thisfile_rscript())) dirname(res)
+    # http://stackoverflow.com/a/35842176/2292993  
+    # RStudio only, can work without source()
+    else dirname(rstudioapi::getActiveDocumentContext()$path)
+}
+
+# added by JR
+#' get current source file name
+#' @param
+#' @return
+#' @examples
+#' works with source() or in RStudio Run selection
+#' @export
+getsn <- function() {
+    # http://stackoverflow.com/questions/1815606/rscript-determine-path-of-the-executing-script
+    # must work with source()
+    if (!is.null(res <- .thisfile_source())) res
+    else if (!is.null(res <- .thisfile_rscript())) res
+    # http://stackoverflow.com/a/35842176/2292993  
+    # RStudio only, can work without source()
+    else rstudioapi::getActiveDocumentContext()$path
+}
+# Helper functions
+# name of this file is executed with source
+.thisfile_source <- function() {
+    for (i in -(1:sys.nframe())) {
+        if (identical(sys.function(i), base::source))
+            return (normalizePath(sys.frame(i)$ofile))
+    }
+
+    return(NULL)
+}
+# name of this file if executed with Rscript
+.thisfile_rscript <- function() {
+    cmdArgs <- commandArgs(trailingOnly = FALSE)
+    cmdArgsTrailing <- commandArgs(trailingOnly = TRUE)
+    cmdArgs <- cmdArgs[seq.int(from=1, length.out=length(cmdArgs) - length(cmdArgsTrailing))]
+    res <- gsub("^(?:--file=(.*)|.*)$", "\\1", cmdArgs)
+
+    # If multiple --file arguments are given, R uses the last one
+    res <- tail(res[res != ""], 1)
+    if (length(res) > 0)
+        return (res)
+
+    return(NULL)
+}
+
+#' get MAIN file name
+#' @param
+#' @return
+#' @examples
+#' works with source() or in RStudio Run selection
+#' @export
+getmn <- function() {
+    if (!is.null(res <- .thisfile_rscript())) res
+    # http://stackoverflow.com/questions/1815606/rscript-determine-path-of-the-executing-script
+    # must work with source()
+    else if (!is.null(res <- sys.frame(1)$ofile)) res
+    # http://stackoverflow.com/a/35842176/2292993  
+    # RStudio only, can work without source()
+    else rstudioapi::getActiveDocumentContext()$path
+}
+
+#' get MAIN file dir
+#' @param
+#' @return
+#' @examples
+#' works with source() or in RStudio Run selection
+#' @export
+getmd <- function() {
+    if (!is.null(res <- .thisfile_rscript())) dirname(res)
+    # http://stackoverflow.com/questions/1815606/rscript-determine-path-of-the-executing-script
+    # must work with source()
+    else if (!is.null(res <- sys.frame(1)$ofile)) dirname(res)
+    # http://stackoverflow.com/a/35842176/2292993  
+    # RStudio only, can work without source()
+    else dirname(rstudioapi::getActiveDocumentContext()$path)
+}
+
+# convenience, easier to remember functions
+
+#' get current source file name
+#' @param
+#' @return
+#' @examples
+#' works with source() or in RStudio Run selection
+#' @export
+whoami <- function() {
+    getsn()
+}
+
+#' get current dource file directory
+#' @param
+#' @return
+#' @examples
+#' works with source() or in RStudio Run selection
+#' @export
+whereami <- function() {
+    getsd()
+}
 
 #' myname()
 #'
@@ -89,7 +237,159 @@ getScriptPath <- function() {
 #' @export
 #
 myname <- function() { 
-    deparse(sys.calls()[[sys.nframe()-1]]) 
+    deparse(sys.calls()[[sys.nframe()-1]])
+}
+
+
+#' my.name()
+#'
+#' my.name() obtains the name of the function that called it
+#'
+#' This function will return the name of the calling function.
+#' The CALLING function !!!
+#' THE CALLING FUNCTION !!!!!!
+#' It is intended as a way to obtain a function's own name for error
+#' reporting. 
+#  We could do it directly, within a function using 
+#  my.name <- deparse(sys.call())
+#  but it would be difficult to understand. Isolating this in a function
+#  call makes it more readable.
+#'
+#' 
+#' @return	the name of the calling function (one up in the call stack)
+#'
+#' @usage	me <- my.name()
+#'
+#' @examples
+#'	f <- function() { print(my.name()) }
+#'	f()
+#'	##[1] "print(my.name())"
+#'	## my.name() is being passed to print() as an argument and is thus
+#'	## called by 'print', hence the output
+#'	##
+#'	f <- function() { me <- my.name() ; print(me) }
+#'	f()
+#'	##[1] "f()"
+#'	## my.name() is called by f() to obtain its own name and then the name
+#'	## is handled to print().
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+my.name <- function(verbose=F) { 
+	my.call.number <- sys.nframe()
+	if (my.call.number == 1) {
+	    # we are at the script/command line top level
+		top.file <- sys.frame(1)$ofile
+	    if (is.null(top.file))
+		    caller <- "R"
+		else {
+		    caller <- top.file
+            if (verbose == FALSE) caller <- basename(caller)
+		}
+	} else {
+    	caller <- deparse(sys.call(-1)) 
+		if (! verbose) caller <- gsub('\\(.*', '', as.character(caller))
+		#who.called.me <- deparse( sys.calls()[[ my.parent.number ]] )
+		#return( who.called.me )
+    }
+    return(caller)
+}
+
+# alternative (and simpler) implementation
+me <- function(..., verbose=F) {
+    if (sys.nframe() == 1) callingFun <- "R"
+    else callingFun = as.list(sys.call(-1))[[1]]
+	
+    calledFun = as.list(sys.call())[[1]]
+    if (verbose) message(paste(callingFun, " is calling ", calledFun, sep=""))
+	return(callingFun)
+}
+
+
+#' myparent()
+#'
+#' myparent() obtains the name of parent of the calling function
+#'
+#' This function will return the name of the parent of the calling function.
+#' The PARENT OF THE CALLING function !!!
+#' THE PARENT OF THE CALLING FUNCTION !!!!!!
+#' It is intended as a way to obtain a function's parent name for error
+#' reporting, it should SELDOMLY be used and only IF TOTALLY SURE THIS IS
+#' WHAT YOU WANT
+#'
+#' It may be used to skip one level on specific occasions (be wary, very wary)
+#' for instance: print() will not first evaluate its argument when it is a
+#' function, but call the function: if we were to use myname(), e.g. as
+#' f <- function() print(myname()) ; f()
+#' we would get 'print(myname))' as a result, because as 'myname' is evaluated
+#' inside 'print', the name printed is 'print' which is who does the calling
+#' of 'myname'
+#'
+#' In that case, when a function evaluates its arguments, but we want to
+#' get the name of its caller, we could use
+#' f <- function() print(myparent())
+#' and since f is the parent of 'print' we would get 'f()'
+#'
+#' but note that there is a btter way to avoid ambiguity: simply assign the
+#' name to a character variable before using it:
+#' f <- function() { me <- myname() ; print(me) }
+#' now, since 'me' is a character string and no longer a function argument,
+#' print will not evaluate it and will use it 'as is'. Much better, simpler
+#' and evident.
+#'
+#' 
+#' @return	the name of the parent of the calling function (two up in the call stack)
+#'
+#' @usage	f <- function() print(myparent()) 
+#'
+#' @examples
+#'	f <- function() { print(myname()) }
+#'	f()
+#'	##[1] "print(myname())"
+#'	## myname() is being passed to print() as an argument and is thus
+#'	## called by 'print', hence the output
+#'	##
+#'	f <- function() { me <- myname() ; print(me) }
+#'	f()
+#'	##[1] "f()"
+#'	## myname() is called by f() to obtain its own name and then the name
+#'	## is handled to print().
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+myparent <- function() { 
+    deparse(sys.calls()[[sys.nframe()-2]])
+}
+
+# ALTERNATIVE implementation
+my.caller <- function(verbose=F) {
+	my.call.number <- sys.nframe()
+	if (my.call.number <= 2) {
+	    # we are at the script/command line top level
+		# or colled by a function whose parent is the
+		# top level
+		top.file <- sys.frame(1)$ofile
+	    if (is.null(top.file))
+		    caller <- "R"
+		else {
+		    caller <- top.file
+            if (verbose == FALSE) caller <- basename(caller)
+		}
+	} else {
+    	caller <- deparse(sys.call(-2)) 
+		if (! verbose) caller <- gsub('\\(.*', '', as.character(caller))
+		#who.called.me <- deparse( sys.calls()[[ my.parent.number ]] )
+		#return( who.called.me )
+    }
+    return(caller)
 }
 
 
@@ -108,7 +408,7 @@ myname <- function() {
 #' @examples
 #'		f <- function(x) { if (x < 10) {print(x)} else {cat.err(x, "is too big\n")}}
 #'		f(13)
-#'		##ERROR in  f(13) : 13 is too big
+#'		##f(13): ERROR 13 is too big
 #'
 #' @author	(C) CNB-CSIC
 #'
@@ -116,12 +416,22 @@ myname <- function() {
 #'
 #' @export
 #
-cat.err <- function(abort=FALSE, ...) { 
+cat.err <- function(..., error=NULL, abort=FALSE) { 
     #caller <- deparse( sys.calls()[[sys.nframe()-1]] )
-    caller <- deparse( sys.call(-1) )
-    cat('ERROR in ', caller, ":", ...)
+    #caller <- deparse( sys.call(-1) )
+    caller <- basename(getsn())
+    if (is.null(caller)) caller=basename(getmn())
+    if (! is.null(error)) cat(sep='', caller, ': ERROR ', error$message, '\n')
+    cat(caller, ': ERROR ', ..., '\n')
     if (abort) {
-        quit(save="no", status=1, runLast=FALSE)
+        # do not run .Last() immediately before normal termination 
+        # (.Last.sys() is always run after .Last() is runLast is 
+        # true), do not save the workspace environment and session
+        # history, and return 1 as the command status
+        # The default error handler in R returns 1 as the status,
+        # upon 'suicide' (a catastrophic error) R will return 2,
+        # user error values are recommended to be 10:256.
+        quit(save="no", status=10, runLast=FALSE)
     }
 }
 
@@ -139,7 +449,7 @@ cat.err <- function(abort=FALSE, ...) {
 #' @examples
 #'		f <- function(x) { if (x < 10) {print(x)} else {cat.warn(x, "is too big\n")}}
 #'		f(13)
-#'		##WARNING in  f(13) : 13 is too big
+#'		##f(13): WARNING 13 is too big
 #'
 #' @author	(C) CNB-CSIC
 #'
@@ -148,11 +458,14 @@ cat.err <- function(abort=FALSE, ...) {
 #' @export
 #
 cat.warn <- function(...) { 
-     #caller <- deparse( sys.calls()[[sys.nframe()-1]] )
-     #me <- as.list(sys.call())[[1]]
-     #parent <- as.list(sys.call(-1))[[1]]
-     caller <- deparse( sys.call(-1) )
-     cat('WARNING in ', caller, ":", ...)
+    #cat.nl('ME', getmn(), getsn(), whoami())
+    #caller <- deparse( sys.calls()[[sys.nframe()-1]] )
+    #me <- as.list(sys.call())[[1]]
+    #parent <- as.list(sys.call(-1))[[1]]
+    #caller <- deparse( sys.call(-1) )
+    caller <- basename(getsn())
+    if (is.null(caller)) caller=basename(getmn())
+    cat(caller, ': WARNING ', ..., '\n')
 }
 
 
@@ -164,7 +477,39 @@ cat.warn <- function(...) {
 #'
 #' @return	whatever cat() returns
 #'
-#' @usage	cat.warn('some message\n', sep='')
+#' @usage	cat.info('some message\n', sep='')
+#'
+#' @examples
+#'		f <- function(x) { if (x < 10) {print(x)} else {cat.info(x, "is too big\n")}}
+#'		f(13)
+#'		##f(13): INFO 13 is too big
+#'
+#' @author	(C) CNB-CSIC
+#'
+#' @license	EU-GPL
+#'
+#' @export
+#
+cat.info <- function(...) { 
+    #caller <- deparse( sys.calls()[[sys.nframe()-1]] )
+    #me <- as.list(sys.call())[[1]]
+    #parent <- as.list(sys.call(-1))[[1]]
+    #caller <- deparse( sys.call(-1) )
+    caller <- basename(getsn())
+    if (is.null(caller)) caller=basename(getmn())
+    cat(caller, ': INFO ', ..., '\n')
+}
+
+#' cat.nl()
+#'
+#' cat.nl() prints a generic message using cat() and adds 
+#' a '\n' at the end
+#'
+#' @param	...	The message to print and cat options (see cat())
+#'
+#' @return	whatever cat() returns
+#'
+#' @usage	cat.nl('some message', sep='')
 #'
 #' @examples
 #'		f <- function(x) { if (x < 10) {print(x)} else {cat.info(x, "is too big\n")}}
@@ -177,13 +522,8 @@ cat.warn <- function(...) {
 #'
 #' @export
 #
-
-cat.info <- function(...) { 
-     #caller <- deparse( sys.calls()[[sys.nframe()-1]] )
-     #me <- as.list(sys.call())[[1]]
-     #parent <- as.list(sys.call(-1))[[1]]
-     caller <- deparse( sys.call(-1) )
-     cat('INFO ', caller, ":", ...)
+cat.nl <- function(...) {
+    cat(..., '\n')
 }
 
 
@@ -385,17 +725,21 @@ short.title <- function(text='', level=1) {
 }
 
 
+#' cat.line(char, len=80)
 #'
-#'
-#'
+#' Write a line of len equal characters
 #' 
 #' @param
+#'  char    a character or string
+#'  len     the number of times to repeat char
 #' 
 #' @return
 #'
 #' @usage
 #' 
 #' @examples
+#'      cat.char('=')
+#'      cat.char('=-', len=40)
 #'
 #' @author	(C) CNB-CSIC
 #'
@@ -644,7 +988,7 @@ openlog <- function(logfile) {
 #' @export
 #
 sink.titanic <- function() {
-    while (sink.number() >= 1) { sink() }
+    while (sink.number() > 0) { sink() }
 }
 
 
@@ -785,7 +1129,7 @@ loadTableFile <- function(file="",
         file <- file.choose()
         fnames <- c(file)
         avail <- c(TRUE)
-	suff <- c(file_ext(file))
+	    suff <- c(file_ext(file))
     }
         
     table <- data.frame()
@@ -931,9 +1275,9 @@ loadTableFile <- function(file="",
 
 
 
+#' continue.on.key()
 #'
-#'
-#'
+#' temporarily stop execution until a key is pressed
 #' 
 #' @param
 #' 
@@ -961,9 +1305,9 @@ continue.on.key <- function(interactive=F) {
 }
 
 
+#' continue.on.enter()
 #'
-#'
-#'
+#' temporarily detain execution until the [ENTER] key is pressed
 #' 
 #' @param
 #' 
@@ -988,8 +1332,9 @@ continue.on.enter <- function(prompt='Press ENTER to continue: ', interactive=F)
 
 
 #'
+#' more.columns()
 #'
-#'
+#' show more columns from a table
 #' 
 #' @param
 #' 
@@ -1070,7 +1415,7 @@ more.columns <- function (data, columns=c(1:dim(data)[2]), lines=20, header='', 
 
 #' get.name.of
 #'
-#' get a variable or any known R object name as a character string
+#' get a variable's or any known R object's name as a character string
 #' 
 #' @param v	the R object
 #' 
@@ -1095,7 +1440,7 @@ get.name.of <- function(v) {
 
 #' show.data.frame
 #'
-#' show the contents of a data.frame using gWidgets
+#' show the contents of a data.frame using gWidgets2
 #' 
 #' @param	df	the data.frame to show
 #' @param	window.name	the name for the display window (defaults to
@@ -1142,9 +1487,9 @@ show.data.frame <- function(df,
 
 
 
+#' as.png
 #'
-#'
-#'
+#' execute the argument and save its graphical output as a PNG file
 #' 
 #' @param
 #' 
@@ -1173,7 +1518,10 @@ as.png <- function(PLOT=NULL,
                 png(file, width=width, height=height)
                 print(PLOT)
             },
-            finally = dev.off()
+            error=function(err) { 
+                    cat.info("error", err$message, "creating", file, '\n')
+                  },
+            finally=dev.off()
         )
     }
     return()

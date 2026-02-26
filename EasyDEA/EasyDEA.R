@@ -1,39 +1,10 @@
 #!/usr/bin/env Rscript
 #
+#
 # We start from data that has already been cleaned by performing a quality
 # check with FastQC and subsequent edge trimming.
 #
-# The next step is to align the reads and calculate the counts of reads
-# that map to each gene. This has been done as well previously, obtaining
-# alignments in BAM format: the .bam files (binary files containing the
-# reads aligned to the reference genome sequence) and the .bam.bai files
-# containing the indexes for each one). This step is mostly a matter of
-# time and has already been done:
-# 
-#   Paired-end Illumina short-reads were aligned against Coturnix japonica
-#   genome (v2.0 primary assembly) using RNA-STAR (1) (--outReadsUnmapped
-#   Fastx; --alignIntronMax 10000; -- alignMatesGapMax 10000). PCR and optical
-#   duplicates were marked using the MarkDuplicates function of Picard-Tools 
-#   (GATK)(2) (TAGGING_POLICY=ALL). Alignment results, saved as BAM files, 
-#   were sorted and indexed using samtools (3).
-# 
-# We take the alignments produced by the Bioinformatics for Proteomics and
-# Genomics Service of CNB directly, which are stored in the folder
-# 'Alignments_Coturnix', and the reference genome used by them which is in
-# the folder 'refGenomes/Coturnix_Japonica'. The reference files correspond
-# to the 2.0 primary assembly. This is important for we will need their
-# indexes for the next step.
-#
-# Now we need to calculate the counts of the reads that map to gene regions,
-# summing up the reads that match each gene. For this, we use each .bam file
-# and process it with the function featureCounts from R package Rsubread, and
-# the reference genome data, which is in file Cjaponica.gtf. This last file
-# contains the information about the features annotated in the genome of
-# Coturnix japonica, including the coordinates of each feature in the reference
-# genome. The function featureCounts will use these coordinates to know to
-# which feature each read maps.
-#
-
+# NOTE: for debugging look into Rbase_tools.R
 
 # we need this function here so we can include additional files
 # until we make this into a package
@@ -41,8 +12,9 @@ getScriptPath <- function()
 {
      
     # this works if we were called with 'source()'
-    src.path <- getSrcFilename(function() {}, full.names=T)
-    if (! is.null(src.path) && src.path != ""){
+    src.path <- utils::getSrcFilename(function() {}, full.names=T)
+    if ((! is.null(src.path)) && 
+        (length(src.path) != 0)) {
         return(src.path)
 	}
     # this works for Rscript, it may match more than one path
@@ -65,14 +37,21 @@ getScriptPath <- function()
 }
 
 # get my location
-#mydir <- dirname(getScriptPath())
-my.dir <- '.'
-source(paste(my.dir, "lib", "Rbase_tools.R", sep='/'))
+my.source <- getScriptPath()
+#my.dir <- '.'
+my.name <- basename(my.source)
+my.dir <- normalizePath(dirname(my.source))
+my.lib <- normalizePath(file.path(my.dir, "lib"))
 # inside my location there should be a 'lib' directory with the needed
-# auxiliary scripts: we'll source them all
-sourceDir(paste(my.dir, "lib", sep='/'), VERBOSE = F)
+# auxiliary scripts: we'll source them all (after loading the sourceDir
+# function from lib/Rbase_tools.R)
+source(file.path(my.lib, "Rbase_tools.R"))
+sourceDir(my.lib, VERBOSE = F)
 
-
+# ensure we have all the packages we need
+# we do it here to ensure all is installed before we are run and that we do
+# not get an obscure comment somewhere while being run that might escape
+# out attention among the flow of messages printed
 use.package("optparse")
 use.package("ensembldb")		# needs to be first to avoid S4 inconsistencies
 use.package("Rsubread")		# for read mapping
@@ -82,6 +61,9 @@ use.package("GO.db")
 use.package("PFAM.db")
 
 use.package("biomaRt")		# an alternate approach to retrieve annotation
+use.package("STRINGdb")
+use.package("igraph")
+#use.package("netSmooth")
 
 use.package("tibble")			# general tools
 use.package("tidyr")
@@ -110,16 +92,19 @@ use.package("pathview")
 use.package("tcltk")
 use.package("gWidgets2")
 
+
 # Parser arguments
 options <- get.options()
 
 # For convenience, we will assign options to specific names
-#	we could get a similar efect if instead of a list, options
-#	were a data.frame and then it would suffice to use attch()
+#	we could get a similar efect if we were to use attach()
 #	but this makes it evident which variables correspond to 
-# 	options
-ALIGN <-                  options$ALIGN
-BOTH <-					  options$BOTH
+# 	configurable options, whereas with attach() they would
+#   seemingly pop up out of nowhere as if by magic and it
+#   wouldn't be evident were did they get their value from
+ALIGN <-                  options$ALIGN         # we need to align the reads
+PAIRED <-                 options$PAIRED        # we have paired reads
+BOTH <-					  options$BOTH          # require BOTH reads in a pair to match
 USE.ONLINE.ANNOTATION <-  options$USE.ONLINE.ANNOTATION
 USE.EDGER <-              options$USE.EDGER
 USE.DESEQ2 <-             options$USE.DESEQ2
@@ -128,25 +113,28 @@ annotation <-             options$annotation	# reference annotation file
 release <-                options$release		# release name
 target.organism <-        options$target.organism
 ens.version <-            options$ens.version	# version of ENSEMBL to use
-mart.name <-              options$mart.name      # mart from BiomaRt to use
-org.package <-            options$org.package
-kegg.organism <-		  options$kegg.organism
+mart.name <-              options$mart.name     # mart from BiomaRt to use
+org.package <-            options$org.package   # name of the Org package for this organism
+ncbi.taxid <-             options$ncbi.taxid
+kegg.organism <-		  options$kegg.organism # name of the organism in KEGG
 n.genes <-                options$n.genes		# number of top genes to revise
 fastq.dir <-              options$fastq.dir     # directory with fastq files
-alignment.dir <-          options$alignment.dir
+alignment.dir <-          options$alignment.dir # guess what
 feature.count.dir <-	  options$feature.count.dir
-rnaseq.out <-             options$rnaseq.out
+rnaseq.out <-             options$rnaseq.out    # directory for the results
 my.name <-                options$my.name		# used to identify maintainer of
 my.email <-               options$my.email		# any created annotation package
-my.user <-                options$my.user        # used to access MySQL
-my.password <-            options$my.password
-metadata <-               options$metadata
-cpm.threshold <-          options$cpm.threshold
-significance.threshold <- options$significance.threshold
-design.column <-          options$design.column
-config.file <-            options$config.file
-INTERACTIVE <-            options$INTERACTIVE
-VERBOSE <-                options$VERBOSE
+my.user <-                options$my.user       # used to access MySQL
+my.password <-            options$my.password   # used to access MySQL
+metadata <-               options$metadata      # name of the metadata file
+cpm.threshold <-          options$cpm.threshold # you may need to do a test run
+significance.threshold <- options$significance.threshold # to determine these
+design.column <-          options$design.column # column in the metadata used to guide the comparisons
+config.file <-            options$config.file   # not really needed or used later
+INTERACTIVE <-            options$INTERACTIVE   # whether we want to control the run
+VERBOSE <-                options$VERBOSE       # produce additional output
+# or we could simply attach(options)
+# only I (JR) am not too happy with non-explicit variable names
 
 # convenience variables
 by.rows=1
@@ -161,21 +149,25 @@ by.columns=2
 short.title('EasyDEA: RNA-Seq Analysis')		# Print a visible title
 
 # Generate Output Directory Hierarchy
+# folder is the working folder, rnaseq.out/{both_ends|any_end}
 folder <- create.output.hierarchy(rnaseq.out, use.both.reads=BOTH)
 
 # To ensure reproducibility, make a copy of the metadata
 # into the output rnaseq folder
 system(paste("cp", metadata, rnaseq.out))
 system(paste("cp", metadata, folder))
-# this could give problem if we are run on our installation folder for
-# we would get an error and might confuse the user
-#system(paste("cp -R", mydir, folder))
+# also save our own code
+if (! file.exists(file.path(folder, my.name))) {
+    system(paste("cp -R", my.source, my.lib, rnaseq.out))
+}
 
 # save the options so we keep a record of how the analysis was generated
-save.options(options, paste(folder, 'RNAseq_options.conf', sep='/'))
-
+opt.file <- file.path(folder, 'RNAseq_options.conf')
+if (!save.options(options, file=opt.file)) {
+    cat.warn("Could not save options file", opt.file)
+}
 # keep a log file for tracking and reporting
-logfile <- paste(folder, "log", "RNAseq.log", sep='/')
+logfile <- file.path(folder, "log", "RNAseq.log")
 log <- openLogFile(logfile)	# opens with sink(), may be closed
 						    # specifically with closeLogFile(log)
                             
@@ -187,13 +179,14 @@ on.exit(sink.titanic, add=T)
 
 
 
-
-
 ##############################################################################
 #
 #  PREPARE ANNOTATION SO IT IS READY WHEN WE GET THE RESULTS
 #
 ##############################################################################
+
+annotation.dir <- file.path(rnaseq.out, "annotation")
+
 #---------------------------------------------------------------------------
 
 # Now is time to prepare to connect all the results we get with the existing
@@ -214,10 +207,16 @@ on.exit(sink.titanic, add=T)
 # 'generate-EnsDBs.R' we create a sqlite file that has all the information
 # needed to continue
 
+cat('\n\n')     # leave some room for clarity
 short.title('Ensembl Annotation')
 
+# THIS SHOULD MATCH THE LOCATION IN CREATE.OUTPUT.HIERARCHY
+#       XXX JR XXX We need to think a better way of maintaining consistence
+#       maybe collect all output directories and files in a single object
+#       'out'
 # NOTE: to be used to store/search annotation from now on
-annotation.dir <- file.path(folder, "annotation")
+#   used to be 'folder'/'annotation', which now is a relative symlink to
+ens.db <- NULL
 
 if (USE.ONLINE.ANNOTATION == TRUE) {
     # get access to annotation hub
@@ -230,14 +229,13 @@ if (USE.ONLINE.ANNOTATION == TRUE) {
         last.ref <- last(names(qr))
         ens.db <- qr[[last.ref]]
     }
-
-
-} else {    
+} else {
+    # build annotation from GTF file
     DBFile <- build.offline.annotation( 
                               annotation.dir,
                               db.dir=paste('EnsDb', release, ens.version, sep = "_"),		##ADRIAN
                               target.organism=target.organism,
-                              reference.gtf=reference.gtf,	##ADRIAN
+                              reference.gtf=reference.gtf,
                               release=release,
                               ens.version=ens.version,
                               user=my.user,
@@ -251,6 +249,7 @@ if (USE.ONLINE.ANNOTATION == TRUE) {
 
 if (VERBOSE) {
     # check it
+    cat.info("EnsDB:")
     print(ens.db)
     columns(ens.db)
 }
@@ -264,6 +263,7 @@ if (VERBOSE) {
 # M A K E     O R G     P A C K A G E
 # ---------------------------------------------------------------
 
+cat('\n\n')
 short.title('Org DB Annotation')
 
 org.db <- NULL
@@ -293,30 +293,23 @@ if (USE.ONLINE.ANNOTATION == TRUE) {
 	}
 	
 } else {
-
-# Build offline annotation
-#if (is.null(org.db)) {
-     
-     if ( ! require(org.package, character.only=T)) {
+    # Build offline annotation if none is available locally
+    if ( ! require(org.package, character.only=T)) {
         #-----------------------------------------------
         # Create Org Package
         #-----------------------------------------------
         #
         # The datasets were first downloaded by hand from NCBI
-        # and SwissProt into org.Gg.eg.db.
+        # and SwissProt into org.Xx.eg.db.
         # Then the following command had to be used:
         #
         makeOrgPackageFromNCBI(			## ADRIAN
                 author  = "J. R. Valverde <jrvalverde@cnb.csic.es>", 
                 maintainer = "J. R. Valverde <jrvalverde@cnb.csic.es>", 
-                tax_id  = "9031", # from NCBI Taxonomy browser (ncbi:txid9031)
-                genus   = "Gallus", 
-                species = "gallus", 
-                version = "6a", 
-                #tax_id = "93934", 
-                #genus = "Coturnix", 
-                #species = "japonica", 
-	        	#version = "2.0", 
+                tax_id  = ncbi.taxid, # from NCBI Taxonomy browser
+                genus   = split(target.organism, ' ')[1], 
+                species = split(target.organism, ' ')[2], 
+                version = "0.1",        # or better, the genome's version 
                 outputDir = "./org", 
                 NCBIFilesDir = "./ncbi"#, 
                 #rebuildCache=FALSE
@@ -361,159 +354,42 @@ if (USE.ONLINE.ANNOTATION == TRUE) {
 }
 
 # At this point ens.db should contain the ENSEMBL data and 
-# org.db the Org type data.
-
-
+# org.db the Org data.
 
 
 # ---------------------------------------------------------------
 # O B T A I N   B I O M A R T   A N N O T A T I O N
 # ---------------------------------------------------------------
+cat('\n\n')
 short.title('BiomaRt Annotation')
 
-if ( file.exists(paste(annotation.dir, 'biomaRt.annotation.1st.txt', sep='/')) ) {
+bm.1.file <- file.path(annotation.dir, 'biomaRt.annotation.1st.txt')
+print(bm.1.file)
+print(annotation.dir)
+
+if ( file.exists(bm.1.file) ) {
+    cat.nl("Loading existing biomaRt annotation")
    # we have aready retrieved and saved the annotation, use it
     bm.annot.1 <- read.table(
-    		file=paste(annotation.dir, 'biomaRt.annotation.1st.txt', sep='/'), 
+    		file=file.path(annotation.dir, 'biomaRt.annotation.1st.txt'), 
 	        sep='\t', header=T)
 } else {
-    # get all the annotation
-	
-	## Set up connection to ensembl database
-	marts <- listMarts()
-	if (VERBOSE) head(marts)
-	bm.ensembl <- useMart("ENSEMBL_MART_ENSEMBL")
-	bm.ens.datasets <- listDatasets(bm.ensembl)
-	if (VERBOSE) head(bm.ens.datasets)
-		
-	## Get BiomaRt dataset name using RegExp
-	target.ds <- subset(bm.ens.datasets, grepl(mart.name, dataset))
-	biomart.ds.name <- target.ds$dataset		
-	
-	## Load dataset
-	cat("\nLoading dataset", biomart.ds.name, "\n")
-	if ( ! nrow(target.ds) > 0) { stop("BiomaRt Dataset Not Found!") }
-	mart.db <- useDataset(biomart.ds.name, mart = bm.ensembl)
-
-    if (VERBOSE) {
-        #listDatasets(ensembl) %>%  filter(str_detect(description, release))
-        cat("\n   > BiomaRt Attributes")
-		listAttributes(mart.db)[,1:2] %>% head(20)
-        cat("\n   > BiomaRt Filters")
-        listFilters(mart.db) %>% head(20)
-    }
-    
-    # we cannot get all the annotation at once because it times out
-    #full.annot <- getBM(attributes=
-    #                       c("ensembl_gene_id", "ensembl_transcript_id", 
-    #			   				"start_position", "end_position", 
-    #                          "chromosome_name", "gene_biotype", 
-    #                          "description", 
-    #                          "entrezgene_id", "entrezgene_accession", "entrezgene_description", 
-    #                          "go_id", "name_1006", "definition_1006", "go_linkage_type", "namespace_1003", 
-    #                          "goslim_goa_accession", "goslim_goa_description", 
-    #                          "pdb", 
-    #                          "reactome", "uniprotswissprot"), 
-    #                       mart=mart.db)
-    #
-    # so we will retrieve the data in pieces, including ensembl_gene_id in
-    # each piece so we can use it as key for merging the annotation and
-    # saving it in a file to avoid future downloads
-    # each of these calls will cache locally the annotation ro speed up
-    # subsequent accesses
-    bm.ensembl.annot <- get.biomart.ensembl.annotation(mart.db, annotation.dir)
-
-    bm.entrez.annot <- get.biomart.entrez.annotation(mart.db, annotation.dir)
-
-    bm.go.annot <- get.biomart.go.annotation(mart.db, annotation.dir)
-
-    bm.goslim.annot <- get.biomart.goslim.annotation(mart.db, annotation.dir)
-
-    bm.fam.annot <- get.biomart.family.annotation(mart.db, annotation.dir)
-
-    bm.prosite.annot <- get.biomart.prosite.annotation(mart.db, annotation.dir)
-
-    bm.sfam.annot <- get.biomart.superfamily.annotation(mart.db, annotation.dir)
-
-    bm.extra.annot <- get.biomart.extra.annotation(mart.db, annotation.dir)
-
-    # Now that we have all the pieces, merge them all together
-    # into a single annotation variable
-    #	THIS TAKES TOO LONG AND TOO MUCH MEMORY, COMMENTED FOR NOW
-    #bm.annot <- biomart.merge.annotations(list(
-    #                  bm.ensembl.annot,
-    #                  bm.entrez.annot,
-    #                  bm.go.annot,
-    #                  bm.goslim.annot,
-    #                  bm.fam.annot,
-    #                  bm.prosite.annot,
-    #                  bm.sfam.annot,
-    #                  bm.extra.annot
-    #                ),
-    #                by="ensembl_gene_id", folder)
-    #
-    #write.table(bm.annot, file=paste(folder, '/biomaRt.annotation.txt', sep=''), 
-    #        sep='\t', row.names=T, col.names=T)
-
-
-    # Now that we have the annotation we can select unique entries
-    # for our dataset
-
-    # One possible way to do it would be to filter the queries above
-    #	to retrieve the annotation matching ensembl_ids
-    #
-    # We can set a field to use to filter the output data
-    # Set the filter type and values
-    #ourFilterType <- "ensembl_gene_id"
-    # and the values to select from that field
-    #filterValues <- rownames(fit)
-    #
-    # and then obtain the specified annotation from records that match the values
-    # specified in the filter field
-    #fit.bm.extra.annot <- getBM(attributes=c(
-    #                       "ensembl_gene_id", 
-    #                       "pdb",
-    #                       "reactome", 
-    #                       "uniprotswissprot"), 
-    #                   mart=mart.db,
-    #                   filters=ourFilterType,
-    #                   values=filterValues)
-    #                   
-    # deduplicate selecting the first annotation
-    #fit.bm.extra.annot.1 <- fit.bm.extra.annot[ ! duplicated(fit.bm.extra.annot$ensembl_gene_id), ]
-    # then we would repeat this for each annotation subset and merge all of them
-    # at the end...
-
-    # or we could deduplicate everything first and match aftwerards
-    # this has the advantage that we keep all the annotation at hand and
-    # can reuse it for any gene dataset instead of annotating each
-    # specific dataset separately
-    bm.ensembl.annot.1 <- bm.ensembl.annot[ ! duplicated(bm.ensembl.annot$ensembl_gene_id), ]
-    bm.entrez.annot.1 <- bm.entrez.annot[ ! duplicated(bm.entrez.annot$ensembl_gene_id), ]
-    bm.go.annot.1 <- bm.go.annot[ ! duplicated(bm.go.annot$ensembl_gene_id), ]
-    bm.goslim.annot.1 <- bm.goslim.annot[ ! duplicated(bm.goslim.annot$ensembl_gene_id), ]
-    bm.extra.annot.1 <- bm.extra.annot[ ! duplicated(bm.extra.annot$ensembl_gene_id), ]
-
-    # this should now be manageable (many entries should have been removed)
-    bm.annot.1 <- merge(bm.ensembl.annot.1, bm.entrez.annot.1, by="ensembl_gene_id")
-    bm.annot.1 <- merge(bm.annot.1, bm.go.annot.1, by = "ensembl_gene_id")
-    bm.annot.1 <- merge(bm.annot.1, bm.goslim.annot.1, by = "ensembl_gene_id")
-    bm.annot.1 <- merge(bm.annot.1, bm.extra.annot.1,  by = "ensembl_gene_id")
-
-    write.table(bm.annot.1, file = paste(annotation.dir, 'biomaRt.annotation.1st.txt', sep='/'), 
-				sep='\t', row.names=T, col.names=T)
-    # we save it to avoid repeating this in the future
-
-    # or even do it all at once? if we had enough power for building bm.annot:
-    ##bm.annot.1 <- bm.annot[ ! duplicated(bm.annot$ensembl_gene_id), ]
-    ##write.table(bm.annot.1, 
-    ##            file=paste(folder, '/biomart.annotation.1st.txt', sep=''), 
-    ##            sep='\t', row.names=T, col.names=T)
+    cat.nl("Building biomaRt annotation")
+    bm.annot.1 <- get.biomart.annotation(annotation.dir)
 }
+
+
+# ---------------------------------------------------------------
+# O B T A I N   S T R I N G   P P I   A N N O T A T I O N
+# ---------------------------------------------------------------
+cat('\n\n')
+short.title('Getting STRINGdb PPI')
+ppi <- get.stringsdb.ppi(ncbi.taxid=ncbi.taxid, 
+                         mart.name=mart.name, 
+                         save.dir=annotation.dir)
 
 # at this point we have all the different annotation subsets we would
 # like to use.
-
 
 # And now we are ready with our reference info at hand...
 
@@ -523,77 +399,63 @@ if ( file.exists(paste(annotation.dir, 'biomaRt.annotation.1st.txt', sep='/')) )
 # Get the alignments and feature counts	 #
 #										 #
 ##########################################
-
-fc <- NULL
+#
+# The next step is to align the reads and calculate the counts of reads
+# that map to each gene after obtaining alignments in BAM format: 
+# the .bam files (binary files containing the reads aligned to the reference 
+# genome sequence) and the .bam.bai files containing the indexes for each 
+# .bam one. These two steps take the most of the time.
+# 
+# We need to calculate the counts of the reads that map to gene regions,
+# summing up the reads that match each gene. For this, we use each .bam file
+# and process it with the function featureCounts from R package Rsubread, and
+# the reference genome data, which is in a GTF file. This last file
+# contains the information about the features annotated in the genome,
+# including the coordinates of each feature in the reference genome. 
+# The function featureCounts will use these coordinates in the genome and
+# the coordinates where each read maps to the genome in the BAM file to know 
+# to which feature each read maps.
+#
 if ( ALIGN == TRUE ) {
-
+    cat('\n\n')
 	short.title("Aligning Reads")
 	dir.create(alignment.dir, showWarnings = FALSE)
     bam.files <- align.fastq(fastq.dir = fastq.dir,
 							reference = reference,
-							alignment.dir = alignment.dir) 
-	# bam.files <- list.files(path = alignment.dir, pattern = '.bam$', full.names = TRUE, ignore.case = TRUE)
-
-	short.title("Computing Feature Counts")
-
-    # Compute and save fc in cache
-    dir.create(feature.count.dir, showWarnings = FALSE)
-	fc <- compute.feature.counts(bam.files = bam.files, 
-                           annotation = annotation, 
-                           requireBothEnds = BOTH, 
-                           feature.count.dir = feature.count.dir) 
-
-} else {
-
-	#### If Rsubread is used:
-	# One single file will be generated with the counts for all samples
-	
-	#cat("\nUsing existing feature count files\n")
-	#fc <- read.delim(paste(feature.count.dir, "featureCounts.tab", sep = "/"),		### ADRIAN
-	#				header = TRUE, row.names = 1, sep = "\t")
-
-	if (is.null(fc)){
-	
-		#### If HTSeq or similar tools are used:
-		# One count file will be generated per sample. We read the files into a list
-		# and convert it into a single data frame.
-
-		count.files <- list.files(feature.count.dir, pattern = '.*(counts|cnt)$',
-									full.name = TRUE)
-		fc <- merge.count.files(count.files)
-		if (! file.exists(paste(feature.count.dir, 'merged_counts.tab', sep='/')))
-			write.table(fc, paste(feature.count.dir, 'merged_counts.tab', sep='/'))
-	}
-
+							alignment.dir = alignment.dir,
+                            paired=PAIRED) 
 }
+
+# get the TABLE with the feature counts
+cat('\n\n')
+short.title("Getting feature counts")
+fc <- get.feature.counts(file.path(folder, feature.count.dir), alignment.dir, PAIRED, BOTH)
 
 #########################################################################################
 
 # We are ready; we have
-#	annotation (ensembldb, org.db, biomar)
+#	annotation (ensembldb, org.db, biomart)
 #	feature counts table
 
 ########################################################################################
 
 # PREFILTERING STEP
 # Discard genes with no counts in any of the samples
-
 counts <- fc[rowSums(fc)>1, ]
 head(counts)
 #dim(counts)
 
-## LOAD SAMPLE METADATA AND DEFINE DESIGN COLUMN
-
+## LOAD SAMPLE METADATA AND SET DESIGN COLUMN
 sampleInfo <- read.table(metadata, header = TRUE)
 target <- as.factor(sampleInfo[, design.column])
 sampleInfo[, design.column] <- target
 
+# ---------------------------------------------------------------
+# A N A L Y S I S     W I T H     E D G E R
+# ---------------------------------------------------------------
 if (USE.EDGER) {
 
-    # ---------------------------------------------------------------
-    # A N A L Y S I S     W I T H     E D G E R
-    # ---------------------------------------------------------------
-
+	cat("\n\n")
     short.title('EdgeR Analysis')
 	Sys.sleep(1)
     
@@ -617,7 +479,8 @@ if (USE.EDGER) {
 	# model, for only the top 1/2 genes using gene annotation
 	for (i in 1:ncol(fit)){
 		coefficient <- colnames(fit)[i]
-		out.png <- paste(folder, '/edgeR/img/edgeR_volcanoplot_', coefficient,'.png', sep='')
+		out.png <- file.path(folder, 'edgeR', 'img', 
+                   paste('edgeR_volcanoplot_', coefficient,'.png', sep=''))
 		as.png(volcanoplot(fit, highlight = n.genes/2, coef = i, names=fit$genes$SYMBOL, cex=0.8, pch=1),
         	out.png)
 	}
@@ -626,16 +489,18 @@ if (USE.EDGER) {
     fit.thres <- eR.fit.treat(fit, threshold = significance.threshold, folder)
     
     # Save all the contents of 'fit' in an RDS file
-    saveRDS(fit, file=paste(folder, '/edgeR/annotatedVOOMfit+.rds', sep=''))
+    saveRDS(fit, file=file.path(folder, 'edgeR', 'annotatedVOOMfit+.rds'))
     saveRDS(fit.thres, 
-            file=paste(folder, '/edgeR/annotatedVOOMfit+.gt.',
-                       significance.threshold, '.rds', sep=''))
+            file=file.path(folder, 'edgeR', 
+                       paste('annotatedVOOMfit+.gt.',
+                       significance.threshold, '.rds', sep='')))
 
     # and save as well as Rdata file
-    save(fit, file=paste(folder, '/edgeR/annotatedVOOMfit+.RData', sep=''))
+    save(fit, file=file.path(folder, 'edgeRannotatedVOOMfit+.RData'))
     save(fit.thres, 
-         file = paste(folder, '/edgeR/annotatedVOOMfit+.gt.',
-                    significance.threshold, '.RData', sep=''))
+         file = file.path(folder, 'edgeR', 
+              paste('annotatedVOOMfit+.gt.',
+                    significance.threshold, '.RData', sep='')))
 
 
     # -----------------------------------------------------------------
@@ -662,7 +527,6 @@ if (USE.EDGER) {
     # we don't yet.
 
 	short.title('EdgeR Analysis Finished !')
-	cat("\n\n")
 	Sys.sleep(1)
 
 }    # end if (USE.EDGER)
@@ -680,16 +544,63 @@ if (USE.EDGER) {
 # ---------------------------------------------------------------
 
 if (USE.DESEQ2) {
-	
+
+    cat("\n\n")
 	short.title('DESeq2 Analysis')
 	Sys.sleep(1)
 
-	countData <- counts
+	countData <- counts     # use prefiltered (non-zero) counts
 	colData <- sampleInfo
-    if (VERBOSE) print(head(countData))
-	
+    if (VERBOSE) {
+        cat.info("Obtained gene counts (first two rows)")
+        print(head(countData, 2))
+	}
+
+    # save normalized counts in addition to raw feature counts
+    # so we can use them for AI analysis
+    # SAVE NORMALIZED COUNTS FOR AI ANALYSIS
+    #
+    # We do not need normalized counts for differential gene expression
+    # because DESeq2 calculates them automatically.
+    #
+    # But we do need the normalized counts for the AI analysis, so we 
+    # will get and save them.
+    #
+    # edgeR-type TMM normalization depends on the comparison design
+    # try both and see if there are differences (tried, no relevant diffs)
+    # sort metadata
+    #
+    # Note: DESeq2 doesn't actually use normalized counts, rather it uses
+    # the raw counts and models the normalization inside the Generalized Linear
+    # Model (GLM). These normalized counts will be useful for downstream
+    # visualization of results, but cannot be used as input to DESeq2 or any other
+    # tools that peform differential expression analysis which use the negative
+    # binomial model.
+    #
+    # To use these counts directly for variable reduction, we should first 
+    # select significant genes to reduce the number of explanatory variables
+    # and we should make sure that in the design, the reference value (e.g.
+    # "wt" for comparisons) is the first element in countData.
+    #
+    # IMPORTANT NOTE: !!!
+    # We need to have metadata and feature counts in the appropriate
+    # name order for DESeq2 to work correctly.
+    #
+    norm_counts_file <- paste(folder, "/feature_counts/normalizedCounts_by_", column, ".csv", sep='')
+    dds.col <- DESeqDataSetFromMatrix(countData=countData, 
+                colData=colData,  
+    dds.col <- estimateSizeFactors(dds.col)	# add norm factors to dds.col
+    sizeFactors(dds.col)
+    normalized_counts <- counts(dds.col, normalized=TRUE)	# get normalized counts
+                design=as.formula(paste("~", design.column)))
+    write.table(normalized_counts, 
+                file=norm_counts_file,
+	            sep='\t', row.names=T, col.names=T) # better if row.names=F
+    
+    
 	# Create DESeq objects to compare samples by design.column
-    out.base <- paste(folder, "/DESeq2/dds.DESeq2.", design.column, sep='')
+    out.base <- file.path(folder, "DESeq2",
+        paste("dds.DESeq2.", design.column, sep=''))
     
 	if ( file.exists(paste(out.base, "rds", sep='.')) ) {
         dds <- readRDS(file=paste(out.base, "rds", sep='.'))	
@@ -711,12 +622,14 @@ if (USE.DESEQ2) {
 	
 	# Do some diagnostic plots - PCA
 	vst <- varianceStabilizingTransformation(dds)
-	out.png <- paste(folder, "/DESeq2/img/dds.DESeq2.", design.column, "_PCA_plot.png", sep='')
+	out.png <- file.path(folder, "DESeq2", "img", 
+               paste("dds.DESeq2.", design.column, "_PCA_plot.png", sep=''))
 	as.png(plotPCA(vst, intgroup = design.column),
         	out.png)
 	
 	# Plot Dispersion Estimates
-	out.png <- paste(folder, "/DESeq2/img/dds.DESeq2.", design.column, "_DispEstimates.png", sep='')
+	out.png <- file.path(folder, "DESeq2", "img",
+               paste("dds.DESeq2.", design.column, "_DispEstimates.png", sep=''))
 	as.png(plotDispEsts(dds, main = "DESeq2 Per-gene Dispersion Estimates"),
         	out.png)
 	
@@ -725,19 +638,27 @@ if (USE.DESEQ2) {
     print(resultsNames(dds))
 	
 	
+    ### XXX JR XXX ### THIS SHOULD BE A SINGLE FUNCTION LIKE WITH EDGER!!!
+
 	## Perform all pairwise comparisons available in DESeq2 model
 	## DDS objects only include comparisons that take the first level
 	## of the design column as reference.
 	## If we wan to do all possible comparisons, we need to relevel.
+    ##  relevel re-orders the levels of a factor so that the level
+    ##  specified by "ref" becomes the first and all others are moved 
+    ##  down
 	
 	dds.results <- list()
 	levels <- levels(dds[[design.column]])	
 	
 	for (ref in levels) {
 
-		# Relevel
-		dds$sample <- relevel(dds$sample, ref)
-		dds <- DESeq(dds)
+		# Reorder levels of dds$sample (not dds$sample)
+		if (length(levels(dds$sample)) > 2) {
+            dds$sample <- relevel(dds$sample, ref)
+		}
+        # and repeat the DE analysis using 'ref' as reference level
+        dds <- DESeq(dds)
 		
 		# All comparisons for that reference
 		comparisons <- resultsNames(dds)[2:length(resultsNames(dds))]
@@ -749,12 +670,25 @@ if (USE.DESEQ2) {
 			cat("\nComputing DGE:",	  comparison,	"\n")
 			cat(  "==================================\n")
 
-			contrast <- str_split(comparison, pattern = "_")[[1]][c(1, 2, 4)]	#Ex: c("Sample", "DF1.PC", "DF1")
-
+            contrast <- str_split(comparison, pattern = "_")[[1]][c(1, 2, 4)]	
+            # Eg: c("Sample", "DF1.PC", "DF1") or c(col, val1, val2)
+            # This fails if values have '_' in them. 
+            # Assuming that the column name doesn't contain any '_', 
+            # (otherwise there is in principle no safe way to separate them)
+            # we could use instead
+            c  <- str_split(comparison, pattern="_")[[1]][1]
+            v1 <- gsub("^.*?_","", str_split(comparison, pattern="_vs_")[[1]][1])
+            # the '?' makes matching lazy so it only goes up to the first '_'
+            # or we could use
+            #v1 <- gsub(paste("^", c, "_" sep=''), '', str_split(comparison, pattern="_vs_")[[1]][1])
+            v2 <- str_split(comparison, pattern="_vs_")[[1]][2]
+            contrast <- c(c, v1, v2) 
+            if (VERBOSE) cat.info(">>> comparison =", comparison)
+            if (VERBOSE) cat.info(">>> contrast =", contrast)
 			out.file.base <- paste("dds", comparison, sep = ".")				#Ex: "dds.Sample.DF1_PC.vs.DF1"
 
 			# Perform comparison, shrinkage, annotate and identify significant changes.
-			dds.results[[comparison]] <- analysePlotDESeq(
+			dds.results[[comparison]] <- DESeqCompareAndPlot(
 								dds = dds,
 								contrast = contrast,
 								filterFun = ihw,
@@ -764,7 +698,7 @@ if (USE.DESEQ2) {
 								ensembl.db = ens.db,
 								biomart.db = bm.annot.1,
 								org.db = org.db,
-								annotation.dir = paste(folder, "annotation", sep = "/"),
+								annotation.dir = file.path(folder, "annotation"),
 								save = TRUE,
 								out.file.base = out.file.base,
 								out.dir = folder)
@@ -879,7 +813,7 @@ if (USE.DESEQ2) {
     if (INTERACTIVE) {
         ds2.interactively.print.n.most.significant.de.genes(dds.results, n=10)
 
-        ds2.interactively.plot.top.up.down.regulated.gene(	dds, 
+        ds2.interactively.plot.top.up.down.regulated.gene( dds, 
                                                            dds.results, 
                                                            design.column)
     }
@@ -903,36 +837,32 @@ if (USE.DESEQ2) {
 	#   CLUSTER PROFILER   #
 	########################
 
-    for (ms in c(50, 100, 250, 500)) {
+    # minGSSize (minimal size of each geneSet for analyzing) is hardcoded (3-10)
+    #   in the subroutines below, default is 10
+    # maxGSSize (maximal size of genes annotated for testing) is switched here
+    #   default is 500
+    # these values will affect the results by detecting more or less bigger or
+    # smaller groups: too small or too large groups have more chances of
+    # being statistically significative; this may show as differences when
+    # showing (e.g. emapplot) the highest p-valued groups only
+    for (ms in c(100, 500)) {
+    #for (ms in c(50, 100, 250, 500)) {
 	#for (ms in c(5)) {
 		for (cmp.name in names(ds.data)) {
 			
-			if (str_detect(cmp.name, "_vs_DF1$")) next
+			#if (str_detect(cmp.name, "_vs_DF1$")) next
             
 			# for each comparison name
             cmp.data <- ds.data[[ cmp.name ]]
         	cat('\n\nDoing Enrichment with clusterProfiler on', cmp.name, '\n') 
             ann.shrunk.lfc <- cmp.data[[ "shrunk.ann" ]] %>% as.data.frame()
 
-    #        #ms <- 500 
-    #        #out.dir <- paste(folder, "DESeq2/GO_fgsea", cmp.name, sep='/')
-    #        out.dir <- sprintf("%s/DESeq2/GO_fgsea/max.size=%03d/%s",
-    #                folder, ms, cmp.name)
-    #        dir.create(out.dir, showWarning=FALSE, recursive=TRUE)
-    #        gogsea <- GO_fgsea(ann.shrunk.lfc, 
-    #                   max.size=ms,
-    #                   out.dir=out.dir, 
-    #                   out.name='fgsea',
-    #                   use.description=TRUE)
-    #        # we should add fgsea results to the cmp.data list
-    #        ds.data[[cmp.name]][['go.fgsea']] <- gogsea
-
             out.dir <- sprintf("%s/DESeq2/GO+KEGG_cProf/max.size=%03d/%s",
                     folder, ms, cmp.name)
             dir.create(out.dir, showWarning = FALSE, recursive = TRUE)
 
-
-			GO_KEGG_clusterProfiler(ann.shrunk.lfc = ann.shrunk.lfc,
+			GO_KEGG_clusterProfiler(ann.data = ann.shrunk.lfc,
+                                    ranking.column = 'log2FoldChange',
 									max.size = ms,
 									out.dir = out.dir, 
 									out.name = 'cProf',
@@ -950,18 +880,19 @@ if (USE.DESEQ2) {
 	#   FGSEA PACKAGE   #
 	#####################
 
-	for (ms in c(50, 100, 250, 500)) {
+	for (ms in c(100, 500)) {
+#	for (ms in c(50, 100, 250, 500)) {
     	for (cmp.name in names(ds.data)) {
         	# for each comparison name
         	cmp.data <- ds.data[[ cmp.name ]]
-        	cat('\n\nDoing Enrichment with FGSEA on', cmp.name, '\n') 
+        	cat('\n\nDoing Enrichment with FGSEA on', cmp.name, '( max size =', ms, ')\n') 
         	ann.shrunk.lfc <- cmp.data[[ "shrunk.ann" ]] %>% as.data.frame()
-
-        	#out.dir <- paste(folder, "DESeq2/GO_fgsea", cmp.name, sep='/')
+        	#out.dir <- file.path(folder, "DESeq2", "GO_fgsea", cmp.name)
+            # XXX JR XXX CHANGE TO USE file.path()
         	out.dir <- sprintf("%s/DESeq2/GO_fgsea/max.size=%03d/%s", folder, ms, cmp.name)
         	dir.create(out.dir, showWarning = FALSE, recursive = TRUE)
-
-        	gogsea <- GO_fgsea(ann.shrunk.lfc, 
+        	gogsea <- GO_fgsea(ann.data = ann.shrunk.lfc, 
+                       ranking.column = 'log2FoldChange',
                 	   max.size = ms,
                 	   out.dir = out.dir, 
                 	   out.name = 'fgsea',
@@ -1005,8 +936,9 @@ if (USE.DESEQ2) {
     references <- levels(as.factor(colData[ , contrasts.column ]))
 
     for (ref in references) {
+        # CLUSTER GENES
 
-        # Find all the genes common to all samples
+        # 1. Find all the genes that are common to all samples
 		
 		# Create a convenience text variable to simplify/unify filenames below
         ccol_ref <- paste(contrasts.column, ref, sep='_')
@@ -1015,20 +947,28 @@ if (USE.DESEQ2) {
         common <- rownames(ds.data[[1]]$result.ann)
         
 		# Now find common genes for all comparisons 
+        name=''
 		for (i in references) {
             if (i == ref) next
             name <- paste(ccol_ref, "vs", i, sep='_')
-            print(name)
+            cat(name)
             common <- intersect(common, rownames(ds.data[[name]]$signif))
 			#print(length(common))
         }
-        cat(paste("\n\t", length(common), "common genes detected\n\n"))
+        cat(paste("\n', name, '\t", length(common), "common genes detected\n\n"))
+        if (length(common) < 2) {
+            cat.warn("=======================================================")
+            cat.warn(">>>>>>>>>>>>>>>>        ", name)
+            cat.warn("NOT ENOUGH SIGNIFICANTLY DIFFERENT GENES FOR CLUSTERING")
+            cat.warn("=======================================================")
+            next
+        }
 
 		# Create data table with common genes
         data.table <- data.frame(genes = common)
         rownames(data.table) <- common
-
-		# Extract LFC values for each comparison and
+        
+		# 2. Extract LFC values for each comparison and
 		# add it to the common genes table
         
 		for (i in references) {
@@ -1036,21 +976,47 @@ if (USE.DESEQ2) {
             name <- paste(ccol_ref, "vs", i, sep='_')
             data.table[name] <- ds.data[[name]]$signif[common, "log2FoldChange"]
         }
-
+        
+        # 3. Add annotation to the data
+        
         data.annot <- ds.data[[name]]$signif.annot[common, ]
-
+        
+        # 4. Prepare for clustering
         par(mfrow=c(1,1))
-
         set.seed(1963)
 
-        # First have a general look at the methods to get a feeling for the
+        # 5. Have a general look at the methods to get a feeling for the
         # best number of clusters
 
         dif <- data.table[ , -1]
+        # if there is only one reference, then dif only has one column
+        #   this may happen if we only have two levels (e.g. Y/N)
+        #if (dim(dif)[1] == 0 || dim(dif)[2] == 0) {
+        # This check should no longer be needed since we check length(common)
+        if (isEmpty(dif)) {
+            cat('\n')
+            cat.warn("=========================================================")
+            cat.warn(">>>>>>>>>>>>>>>>        ", name)
+            cat.warn("INSUFFICIENT SIGNIFICANTLY DIFFERENT GENES FOR CLUSTERING")
+            cat.warn("=========================================================")
+            next
+        }
         by.row <- 1
         by.col <- 2
-		
-		# Normalize LFC by calculating Z-score (x-mea)
+
+		# 5.1 Normalize LFC by calculating Z-score (x-mean)
+        if (is.vector(dif)) {
+            #means <- mean(dif)
+            #sds <- sd(dif)
+            #nor <- scale(dif,center = means,scale = sds)
+            dif <- as.matrix(dif)
+        } 
+        if (dim(dif)[2] == 1) {     # n.common.genes
+            cat.warn("========================================================")
+            cat.warn("ONLY ONE SIGNIFICANTLY DIFFERENT GENE FOR CLUSTERING")
+            cat.warn("========================================================")
+            next
+        }
         means <- apply(dif, by.col, mean)
         sds <- apply(dif, by.col, sd)
         nor <- scale(dif,center = means,scale = sds)
@@ -1059,38 +1025,47 @@ if (USE.DESEQ2) {
             # Do a scatterplot matrix
             car::scatterplotMatrix(dif)
         }
-        out.png <- paste(folder, "/DESeq2/img/", 
-                   'scatterplot_matrix_', ccol_ref, ".png", 
-                   sep='')
+        out.png <- file.path(folder, "DESeq2", "img", 
+                   paste('scatterplot_matrix_', ccol_ref, ".png", 
+                   sep=''))
         as.png( {
                 print(car::scatterplotMatrix(dif))
                 }, out.png)
 
 
-        # Try to guess the optimum number of K-means clusters with NBClust
-        out.log <- paste(folder, "/DESeq2/cluster/NBClust_", ccol_ref, ".log", sep='')
-        openlog(out.log)
+        ## Try to guess the optimum number of K-means clusters with NBClust
+        #out.log <- paste(folder, "/DESeq2/cluster/NBClust_", ccol_ref, ".log", sep='')
+        #openlog(out.log)
+        #
+        ## NbClust helps us predict best number of clusters using
+		## Hubert index and D index
+        #tryCatch(
+        #    nbc <- NbClust(dif, diss=NULL, 
+        #            distance="euclidean", method="complete", 
+        #            min.nc=3, max.nc=10, 
+        #            index="all", alphaBeale=0.1),
+        #    error=function(err) { cat.nl("NBClust failed (",err$message,")") }   
+        #)
+        #cat("NbClust recommends", nbc, "clusters\n")
+        #sink()  # close last log file
 
-        # NbClust helps us predict best number of clusters using
-		# Hubert index and D index
-        nbc <- NbClust(dif, diss=NULL, 
-                distance="euclidean", method="complete", 
-                min.nc=3, max.nc=10, 
-                index="all", alphaBeale=0.1)
-
-        sink()
-
-
+        # 5.2. cluster genes by k-means
         # Let the user see the various clusters and make a decision
         #
-        out.log <- paste(folder, "/DESeq2/cluster/kmeans/DESeq2_kmeans_all_", 
-                         ccol_ref, ".log", sep='')
+        out.log <- file.path(folder, "DESeq2", "cluster", "kmeans",
+                         paste("DESeq2_kmeans_all_", ccol_ref, ".log", sep=''))
         openlog(out.log)
         for (i in 2:10) {
             cat("\n\tClustering with K-means (", i, " clusters)\n\n", sep = "")
             cl <- kmeans(nor, i)				# NOTE: nor
-            print(table(cl$cluster))
-            print(fviz_cluster(cl, geom = "point", data=nor))
+            cat("Cluster membership summary:\n", table(cl$cluster), "\n")
+            tryCatch(
+                print(fviz_cluster(cl$cluster, geom = "point", data=nor)),
+                error=function(e) {
+                        cat.err("Cannot plot cluster", i, '\n', error=e)
+                        #str(e)
+                      }
+            )
             out.png <- sprintf(
                     "%s/DESeq2/cluster/kmeans/DESeq2_kmeans_%s_nc=%03d.png", 
         	    folder, ccol_ref, i)
@@ -1112,9 +1087,9 @@ if (USE.DESEQ2) {
         # for gg
         kmeans.nc <- 5
 
-
-        out.log <- paste(folder, "/DESeq2/cluster/pam/DESeq2_pam_all_", 
-                         ccol_ref, ".log", sep='')
+        # 5.3 cluster genes by PAM
+        out.log <- file.path(folder, "DESeq2", "cluster", "pam",
+                   paste("DESeq2_pam_all_", ccol_ref, ".log", sep=''))
         openlog(out.log)
         for (i in 2:10) {
             cat("Clustering with PAM (", i, " clusters)\n")
@@ -1140,8 +1115,9 @@ if (USE.DESEQ2) {
         # for gg
         pam.nc <- 7
 
-        out.log <- paste(folder, "/DESeq2/cluster/dbscan/DESeq2_dbscan_all_", 
-                         ccol_ref, ".log", sep='')
+        # 5.4 cluster genes with DBscan
+        out.log <- file.path(folder, "DESeq2", "cluster", "dbscan",
+                   paste("DESeq2_dbscan_all_", ccol_ref, ".log", sep=''))
         openlog(out.log)
         for (e in c(0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.8, 2.0)) {
             cat("\nClustering with DBScan ( eps =", e, " )\n")
@@ -1172,17 +1148,20 @@ if (USE.DESEQ2) {
         # for gg
         dbscan.eps <- 1.5
 
-
+        # 5.5 cluster genes with hierarchical clustering
         hclust.nc <- 5	# we'll set it by hand for now
 
+        # 6 Repeat in detail with each method
         # Now, proceed in detail, method by method, with a deeper and more 
         # detailed analysis
 
+        # 6.1 hierarchical clustering (hclust)
         # possible distances are c("euclidean", "maximum", "manhattan", "canberra",
         #	"binary", "minkowski", "pearson", "spearman", "kendall")
         # possible methods are c("ward.D", "ward.D2", "single", "complete",
         #	"average" (UPGMA), "mcquitty" (WPGMA), "median" (WPGMC), "centroid" (UPGMC))
-        out.log <- paste(folder, "/DESeq2/cluster/hcluster/DESeq2_hcluster_", contrasts.column, "_", ref, ".txt", sep='')
+        out.log <- file.path(folder, "DESeq2", "cluster", "hcluster", 
+                   paste("DESeq2_hcluster_", contrasts.column, "_", ref, ".txt", sep=''))
         sink(out.log, split=T)
         h.cluster.changes(
             #data.table=pca.table[ , -1],
@@ -1193,18 +1172,21 @@ if (USE.DESEQ2) {
         )
         sink()
 
-
-        boot <- 100
-
-        hclust_folder <- paste(folder, "/DESeq2/cluster/hclust_", ccol_ref, sep='')
+        hclust_folder <- file.path(folder, "ESeq2", "cluster",
+                         paste("hclust_", ccol_ref, sep=''))
         dir.create(hclust_folder, showWarnings=FALSE)
 
-        hcut_folder <- paste(folder, "/DESeq2/cluster/hcut_", ccol_ref, sep='')
+        # 6.2 hierarchical clustering (hcut)
+        hcut_folder <- file.path(folder, "DESeq2", "cluster", 
+                       paste("hcut_", ccol_ref, sep=''))
         dir.create(hcut_folder, showWarnings=FALSE)
 
-        out.log <- paste(hcut_folder, "/DESeq2_hcut_", 
-                         ccol_ref, ".txt", sep='')
+        out.log <- file.path(hcut_folder, 
+                   paste("/DESeq2_hcut_", ccol_ref, ".txt", sep=''))
         sink(out.log, split=T)
+        
+        boot <- 100
+
         hc.cl <- cluster.changes(
             #data.table=pca.table[ , -1],
             #annotated.data=sa.data[[name]]$signif.annot[common, ],
@@ -1218,12 +1200,13 @@ if (USE.DESEQ2) {
             )
         sink()
 
-
-        kmeans_folder <- paste(folder, "/DESeq2/cluster/kmeans_", ccol_ref, sep='')
+        # 6.3 k-means
+        kmeans_folder <- file.path(folder, "DESeq2", "cluster",
+                 paste("kmeans_", ccol_ref, sep=''))
         dir.create(kmeans_folder, showWarnings=FALSE)
 
-        out.log <- paste(kmeans_folder, "/DESeq2_kmeans_", 
-                         ccol_ref, ".txt", sep='')
+        out.log <- file.path(kmeans_folder, 
+                paste("DESeq2_kmeans_", ccol_ref, ".txt", sep=''))
         sink(out.log, split=T)
         km.cl <- cluster.changes(
             #data.table=pca.table[ , -1],
@@ -1240,12 +1223,13 @@ if (USE.DESEQ2) {
             )
         sink()
 
-
-        pam_folder <- paste(folder, "/DESeq2/cluster/pam_", ccol_ref, sep='')
+        # 6.4 PAM
+        pam_folder <- file.path(folder, "DESeq2", "cluster",
+            paste("pam_", ccol_ref, sep=''))
         dir.create(pam_folder, showWarnings=FALSE)
 
-        out.log <- paste(pam_folder, "/DESeq2_pam_", 
-                         ccol_ref, ".txt", sep='')
+        out.log <- file.path(pam_folder, paste("DESeq2_pam_", 
+                         ccol_ref, ".txt", sep=''))
         sink(out.log, split=T)
         pam.cl <- cluster.changes(
             #data.table=pca.table[ , -1],
@@ -1262,12 +1246,13 @@ if (USE.DESEQ2) {
             )
         sink()
 
-
-        dbscan_folder <- paste(folder, "/DESeq2/cluster/dbscan_", ccol_ref, sep='')
+        # 6.5 DBscan
+        dbscan_folder <- file.path(folder, "DESeq2", "cluster",
+               paste("dbscan_", ccol_ref, sep=''))
         dir.create(dbscan_folder, showWarnings=FALSE)
 
-        out.log <- paste(dbscan_folder, "/DESeq2_dbscan_", 
-                         ccol_ref, ".txt", sep='')
+        out.log <- file.path(dbscan_folder, paste("DESeq2_dbscan_", 
+                         ccol_ref, ".txt", sep=''))
         sink(out.log, split=T)
         dbs.cl <- cluster.changes(
             #data.table=pca.table[ , -1],
@@ -1283,47 +1268,99 @@ if (USE.DESEQ2) {
             output.folder=dbscan_folder
             )
         sink()
+    }
 
 
-
+    for (ref in references) {
         # Now cluster by experiment
         # -------------------------
 
-    ## ALREADY DONE ABOVE
-    ##    # Find genes that change w.r.t. the reference strain
-    ##
-    ##     name <- paste(contrasts.column, ref, levels(as.factor(target[ , contrasts.column]))[1], sep='_')
-    ##     common <- rownames(ds.data[[name]]$signif)
-    ##     for (i in levels(as.factor(target[ , contrasts.column]))) {
-    ##         if (i == ref) next
-    ##         name <- paste(contrasts.column, ref, i, sep='_')
-    ##         print(name)
-    ##         common <- intersect(common, rownames(ds.data[[name]]$signif))
-    ##     }
-    ##     length(common)	# 681 in Coturnix, 1670 in Gallus
-    ## 
-    ##     data.table <- data.frame(genes=common)
-    ##     #for (i in c("wt", "PC", "P", "1.0", "0.1")) {
-    ##     for (i in levels(as.factor(target[ , contrasts.column]))) {
-    ##     # we do not want to include PC this time
-    ##     #for (i in c("P", "1.0", "0.1")) {
-    ##         if (i == ref) next
-    ##         name <- paste(contrasts.column, ref, i, sep='_')
-    ##         print(name)
-    ##         data.table[name] <- ds.data[[name]]$signif[common, "log2FoldChange"]
-    ##     }
-    ##     rownames(data.table) <- common
-    ## 
+        # 1. Find all the genes that are common to all samples
+		# Create a convenience text variable to simplify/unify filenames below
+        ccol_ref <- paste(contrasts.column, ref, sep='_')
+        # First define all genes detected in results
+        ## common <- rownames(ds.data[[name]]$signif)
+        common <- rownames(ds.data[[1]]$result.ann)
+        
+		# Now find common genes for all comparisons 
+        name=''
+		for (i in references) {
+            if (i == ref) next
+            name <- paste(ccol_ref, "vs", i, sep='_')
+            cat(name)
+            common <- intersect(common, rownames(ds.data[[name]]$signif))
+			#print(length(common))
+        }
+        cat(paste("\n', name, '\t", length(common), "common genes detected\n\n"))
+        if (length(common) < 2) {
+            cat.warn("=========================================================")
+            cat.warn(">>>>>>>>>>>>>>>>        ", name)
+            cat.warn("NOT ENOUGH SIGNIFICANTLY DIFFERENT GENES FOR CLUSTERING")
+            cat.warn("=========================================================")
+            next
+            # XXX JR XXX Note that this implies that clustering
+            # by sample will not be done either !!!
+        }
 
+
+		# Create data table with common genes
+        data.table <- data.frame(genes = common)
+        rownames(data.table) <- common
+        
+		# 2. Extract LFC values for each comparison and
+		# add it to the common genes table
+        for (i in references) {
+            if (i == ref) next
+            name <- paste(ccol_ref, "vs", i, sep='_')
+            data.table[name] <- ds.data[[name]]$signif[common, "log2FoldChange"]
+        }
+        
+        # 3. Add annotation to the data
+        data.annot <- ds.data[[name]]$signif.annot[common, ]
+        
+        # 4. Prepare for clustering
+        par(mfrow=c(1,1))
+        set.seed(1963)
+        by.row <- 1
+        by.col <- 2
+        
+        dif <- data.table[ , -1]
+        # we use similar but different messages to be able to track 
+        # a problem
+        if (isEmpty(dif)) {
+            cat('\n')
+            cat.warn("===================================================")
+            cat.warn(">>>>>>>>>>>>>>>>        ", name)
+            cat.warn("THERE IS NO DATA FOR EXPERIMENT CLUSTERING")
+            cat.warn("===================================================")
+            next
+        }
+        if (is.vector(dif)) dif <- as.matrix(dif)
+        if (dim(dif)[2] == 1) {     # n.common.genes
+            cat.warn("====================================================")
+            cat.warn(">>>>>>>>>>>>>>>>        ", name)
+            cat.warn("THERE IS NOT ENOUGH DATA FOR EXPERIMENT CLUSTERING")
+            cat.warn("====================================================")
+            next
+        }
+        # transpose the table so we work by experiment instead 
         fid <- t(dif)
+        if (dim(fid)[2] == 1) {     # n.common.genes
+            cat.warn("=============================================================")
+            cat.warn(">>>>>>>>>>>>>>>>        ", name)
+            cat.warn("THERE IS TOO FEW DATA FOR EXPERIMENT CLUSTERING")
+            cat.warn("=============================================================")
+            next
+        }
         means <- apply(fid, by.col, mean)
         sds <- apply(fid, by.col, sd)
         ron <- scale(fid,center=means,scale=sds)
 
         # here we have a small number of rows and can set a maximum number of clusters
         maxclust <- nrow(fid) - 1
-
-        # hclust
+        
+        # 5 CLUSTER BY EXPERIMENT
+        # 5.1 hclust
         distan = dist(ron, method="euclidean")
         hcl <- hclust(distan)
         plot(hcl,labels=rownames(fid),main='Default from hclust')
@@ -1332,7 +1369,7 @@ if (USE.DESEQ2) {
 	        hclust_folder, ccol_ref)
         as.png(plot(hcl,labels=rownames(fid),main='Default from hclust'), out.png)
 
-        # kmeans
+        # 5.2 kmeans
         fviz_nbclust(ron, kmeans, method="silhouette", k.max=maxclust)
         out.png <- sprintf(
                 "%s/DESeq2_kmeans_grps_silhouette_%s.png",
@@ -1345,7 +1382,7 @@ if (USE.DESEQ2) {
 	        kmwans_folder, ccol_ref, ccol_ref, 3)
         as.png(fviz_cluster(kcl, data=ron), cout.png)
 
-        # pam
+        # 5.3 pam
         fviz_nbclust(ron, pam, method="silhouette", k.max=maxclust)
         out.png <- sprintf(
                 "%s/DESeq2_pam_grps_silhouette_%s.png",
@@ -1358,7 +1395,7 @@ if (USE.DESEQ2) {
 	        folder, ccol_ref, 3)
         as.png(fviz_cluster(pcl, data=ron), out.png)
 
-        # dbscan
+        # 5.4 dbscan
         # this results in the same two PCs but one cluster
         fviz_nbclust(ron, dbscan, method="silhouette", k.max=maxclust)
         out.png <- sprintf(
@@ -1367,6 +1404,7 @@ if (USE.DESEQ2) {
         as.png(fviz_nbclust(ron, dbscan, method="silhouette", k.max=maxclust), out.png)
         
         ### JR ### eps should be tuned for each experiment
+        ### we should likely use for loop
         dcl <- dbscan(ron, eps=0.2, MinPts=2, showplot=1)
         fviz_cluster(dcl, data=ron)
         out.png <- sprintf(
@@ -1374,7 +1412,7 @@ if (USE.DESEQ2) {
 	        dbscan_folder, ccol_ref, 0.2)
         as.png(fviz_cluster(dcl, data=ron), out.png)
 
-        # this fails
+        # 5.5 this fails
         tryCatch( {
             NbClust(ron, diss=NULL, 
                     distance="euclidean", method="complete", 
@@ -1386,18 +1424,20 @@ if (USE.DESEQ2) {
 }
 
 
-    # ---------------------------------------- #
-    # GENERATE HTML REPORT FOR clusterProfiler #
-    # ---------------------------------------- #
 
-    ## Run the Bash script to generate HTML index files
+# ---------------------------------------- #
+# GENERATE HTML REPORT FOR clusterProfiler #
+# ---------------------------------------- #
 
-report.scr <- paste(my.dir, 'lib', "report", sep="/")
+## Run the Bash script to generate HTML index files
+short.title("Generating report")
+
+report.scr.dir <- file.path(my.dir, 'lib', "report")
 wd <- getwd()
 
 cat("\n\tGenerating HTML Report for clusterProfiler\n\n")
 
-cProf.dir <- paste(folder, "DESeq2", "GO+KEGG_cProf", sep = "/")
+cProf.dir <- file.path(folder, "DESeq2", "GO+KEGG_cProf")
 
 for (size.dir in list.dirs(cProf.dir, recursive = F, full.names = T)) {
 	
@@ -1409,10 +1449,12 @@ for (size.dir in list.dirs(cProf.dir, recursive = F, full.names = T)) {
     	sample <- basename(sample.dir)
         cat("\n",sample, "\n\n", sep = "")
 
-        setwd(sample.dir)
-		system(paste("bash ", wd, '/', report.scr, "/make-clusterprof-index.sh", sep = ""))
-		file.copy(paste(wd, '/', report.scr, "/style.css", sep = ""), ".")
-		setwd(wd)
+        cur.dir <- setwd(sample.dir)
+        if (VERBOSE) cat.info(">>> working in", cur.dir)
+		system(paste("bash", file.path(report.scr.dir, "/make-clusterprof-index.sh")))
+		file.copy(file.path(report.scr.dir, "style.css"), ".")
+		cur.dir <- setwd(wd)
+        if (VERBOSE) cat.info(">>> returning to", wd)
     }
 }
 
@@ -1423,12 +1465,12 @@ for (size.dir in list.dirs(cProf.dir, recursive = F, full.names = T)) {
 
     ## Run the Bash script to generate HTML index files
 
-report.scr <- paste(my.dir, 'lib', "report", sep="/")
-wd <- getwd()
+report.scr.dir <- file.path(my.lib, "report")
+wd <- getwd()       # so we can get back here when using setwd() below
 
 cat("\n\tGenerating HTML Report for FGSEA\n\n")
 
-fgsea.dir <- paste(folder, "DESeq2", "GO_fgsea", sep = "/")
+fgsea.dir <- file.path(folder, "DESeq2", "GO_fgsea")
 
 for (size.dir in list.dirs(fgsea.dir, recursive = F, full.names = T)) {
 	
@@ -1440,20 +1482,24 @@ for (size.dir in list.dirs(fgsea.dir, recursive = F, full.names = T)) {
     	sample <- basename(sample.dir)
         cat("\n",sample, "\n\n", sep = "")
 
-        setwd(sample.dir)
-		system(paste("bash ", wd, '/', report.scr, "/make-fgsea-index.sh", sep = ""))
-		file.copy(paste(wd, '/', report.scr, "/style.css", sep = ""), ".")
-		setwd(wd)
+        cur.dir <- setwd(sample.dir)
+        if (VERBOSE) cat.info(">>> working in", cur.dir, '\n')
+		system(paste("bash", file.path(report.scr.dir, "make-fgsea-index.sh")))
+        file.copy(file.path(report.scr.dir, "style.css"), ".")
+		cur.dir <- setwd(wd)    
+        if (VERBOSE)  cat.info(">>> returning to", wd, '\n')
     }
 	
-	setwd(size.dir)
-	system(paste("bash ", wd, '/', report.scr, "/rename-to-export.sh", sep = ""))
-	file.copy(paste(wd, '/', report.scr, "/style.css", sep = ""), ".")
-	setwd(wd)
+    cur.dir <- setwd(size.dir)
+    if (VERBOSE) cat.info(">>> working in", cur.dir, '\n')
+	system(paste("bash", file.path(report.scr.dir, "rename-to-export.sh")))
+	file.copy(file.path(report.scr.dir, "style.css"), ".")
+	cur.dir <- setwd(wd)
+    if (VERBOSE) cat.info(">>> returning to", wd, '\n')
 }
 
 
-
-while (sink.number() > 0) sink()
+# close all log files
+sink.titanic()
 
 

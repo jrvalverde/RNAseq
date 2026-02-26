@@ -25,38 +25,45 @@ create.output.hierarchy <- function(rnaseq.out='.', use.both.reads=TRUE)
 # set the name of the output folder and log file
     if (use.both.reads == T) {
         requireBothEnds <- T
-        folder <- paste(rnaseq.out, "both_ends", sep='/')	# whether both ends sshould match or just any end
+        folder <- file.path(rnaseq.out, "both_ends")	# whether both ends sshould match or just any end
     } else {
         requireBothEnds <- F
-        folder <- paste(rnaseq.out, "any_end", sep='/')
+        folder <- file.path(rnaseq.out, "any_end")
     }
 
     # create needed directory hierarchy
     # this could go into a separate function for simplicity
     dir.create(rnaseq.out, showWarnings=FALSE)
+    dir.create(file.path(rnaseq.out, "annotation"), showWarning=FALSE)
     dir.create(folder, showWarnings=FALSE)
+    # we may need Rtools::createLink for OS-agnostic symlinks in Windows
+    file.symlink(file.path('..', 'annotation'), 
+                 file.path(folder, "annotation"))
     dir.create(file.path(folder, "log"), showWarning=FALSE)
     dir.create(file.path(folder, "img"), showWarning=FALSE)
-    dir.create(file.path(folder, "annotation"), showWarning=FALSE)
+    dir.create(file.path(folder, "feature_counts"), showWarning=FALSE)
     dir.create(file.path(folder, "edgeR"), showWarning=FALSE)
-    dir.create(file.path(folder, "edgeR/img"), showWarning=FALSE)
-    dir.create(file.path(folder, "edgeR/go"), showWarning=FALSE)
-    dir.create(file.path(folder, "edgeR/pfam"), showWarning=FALSE)
-    dir.create(file.path(folder, "edgeR/cluster"), showWarning=FALSE)
-    dir.create(file.path(folder, "edgeR/cluster/kmeans"), showWarning=FALSE)
-    dir.create(file.path(folder, "edgeR/cluster/pam"), showWarning=FALSE)
-    dir.create(file.path(folder, "edgeR/cluster/dbscan"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/raw"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/shrunk"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/signif"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "raw"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "shrunk"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "signif"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "img"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "go"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "pfam"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "cluster"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "cluster/kmeans"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "cluster", "pam"), showWarning=FALSE)
+    dir.create(file.path(folder, "edgeR", "cluster", "dbscan"), showWarning=FALSE)
     dir.create(file.path(folder, "DESeq2"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/go"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/pfam"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/img"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/cluster"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/cluster/kmeans"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/cluster/pam"), showWarning=FALSE)
-    dir.create(file.path(folder, "DESeq2/cluster/dbscan"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "raw"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "shrunk"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "signif"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "img"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "go"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "pfam"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "cluster"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "cluster", "kmeans"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "cluster", "pam"), showWarning=FALSE)
+    dir.create(file.path(folder, "DESeq2", "cluster", "dbscan"), showWarning=FALSE)
 
     return(folder)
 }
@@ -85,49 +92,60 @@ create.output.hierarchy <- function(rnaseq.out='.', use.both.reads=TRUE)
 #
 
 # Align fastQ reads into the reference genome
-align.fastq <- function(fastq.dir, reference, alignment.dir) {
-   
+align.fastq <- function(fastq.dir, reference, alignment.dir, paired=TRUE) {
+    nthreads <- parallel::detectCores()
+    if (is.na(nthreads)) nthreads <- 1  # this is likely too conservative
+    else nthreads <- as.integer(nthreads/4) # be nice to others
+    
 	# Get the fastq file names
     R1.fastq.files <- list.files(path=fastq.dir, pattern='R1', full.names=TRUE)
-    R2.fastq.files <- list.files(path=fastq.dir, pattern='R2', full.names=TRUE)
     print(R1.fastq.files)
-    print(R2.fastq.files)
-    
+    if (paired == TRUE) {
+        R2.fastq.files <- list.files(path=fastq.dir, pattern='R2', full.names=TRUE)
+        print(R2.fastq.files)
+    } else {
+        R2.fastq.files=NULL
+    }
+        
     # we'll check if the output files exist to avoid repeating
     # work already done
 	
 	ref.fasta <- reference
 	ref.name <- sub("\\.[[:alnum:]]+$", "", basename(reference))
+    ref.dir <- dirname(reference)
 
 	# Go to the alignment directory   
-	wd <- getwd()	
-	setwd(alignment.dir)
-	system(paste('ln -sfr', dirname(paste(wd, ref.fasta, sep = "/")), "ref"))
+	wd <- getwd()	# this is an absolute path, so, we can reuse it
+	cur.dir <- setwd(alignment.dir)
+    if (VERBOSE) cat(">>> working in", cur.dir, "\n")
+	system(paste('ln -sfr', dirname(file.path(wd, ref.fasta)), "ref"))
 	
 	# Check wether sorted bam files already exist.
 	if (length(list.files(pattern='.sorted.bam$', ignore.case=T)) > 0){
 		bam.files <- list.files(pattern='.sorted.bam$', ignore.case=T, full.name = F)
 		cat('\nUSING EXISTING SORTED BAM FILES:')
 		cat('\t', bam.files, sep='\n\t')
-		setwd(wd)
-		return(paste(alignment.dir, bam.files, sep="/"))
+		cur.dir <- setwd(wd)
+        if (VERBOSE) cat(">>> returning to", cur.dir, '\n')
+		return(file.path(alignment.dir, bam.files))
 		
 	# Check wether unsorted bam files exist.
 	} else if (length(list.files(pattern='.bam$', ignore.case=T)) > 0){	
 		bam.files <- list.files(pattern='.bam$', ignore.case=T, full.name = F)
 		cat('\nUSING EXISTING BAM FILES:\n')
 		cat(paste(bam.files), sep='\n\t')
-		setwd(wd)
-		return(paste(alignment.dir, bam.files, sep="/"))
+		cur.dir <- setwd(wd)
+        if (VERBOSE) cat(">>> returning to", cur.dir, '\n')
+		return(file.path(alignment.dir, bam.files))
 	}
 
-	# If Bam files do not exist, perform alignment with Rsubread
-	if (! file.exists(paste('ref/', ref.name, '.00.b.tab', sep=''))) {
+    # If Bam files do not exist, perform alignment with Rsubread
+	if (! file.exists(file.path(ref.dir, paste(ref.name, '.00.b.tab', sep='')))) {
 
 		# build the reference index inside the 'alignment.dir' directory
 		cat('\nBUILDING INDEX\n')
-		buildindex(basename = paste("ref", ref.name, sep = "/"),
-					reference = paste(wd, ref.fasta, sep = "/"))
+		buildindex(basename = file.path(ref.dir, ref.name), # without the .fasta
+					reference = file.path(wd, ref.fasta))   # with .fasta
 
 	} else {
 		cat('\nUSING INDEXED REFERENCE\n')
@@ -140,16 +158,23 @@ align.fastq <- function(fastq.dir, reference, alignment.dir) {
 		#	R1.fastq.files and R2.fastq.files
 
 		cat('\nALIGNING USING R_SUBREAD\n')
-		align(index = paste('ref', ref.name, sep='/'),
-				#nthreads = nthreads,		##ADRIAN
-				readfile1 = paste(wd, R1.fastq.files, sep = "/"),
-				readfile2 = paste(wd, R2.fastq.files, sep = "/"))        
-
+        if (paired == TRUE) {
+		  align(index = file.path(ref.dir, ref.name),
+				nthreads = nthreads,		##ADRIAN
+				readfile1 = file.path(wd, R1.fastq.files),
+				readfile2 = file.path(wd, R2.fastq.files)
+                )        
+        } else {
+		  align(index = file.path('ref', ref.name),
+				nthreads = nthreads,		
+				readfile1 = file.path(wd, R1.fastq.files)
+                )        
+        }
 		# Align will generate the output in the fastq directory, we
 		# so we move the alignment results to the output directory
-		system(paste("mv ", paste(wd, fastq.dir, sep = "/"), "/*.BAM .", sep=""), ignore.stderr = T)
-		system(paste("mv ", paste(wd, fastq.dir, sep = "/"), "/*.vcf .", sep=""), ignore.stderr = T)
-		system(paste("mv ", paste(wd, fastq.dir, sep = "/"), "/*.summary .", sep=""), ignore.stderr = T)
+		system(paste("mv", file.path(wd, fastq.dir, "*.BAM"), "."), ignore.stderr = T)
+		system(paste("mv", file.path(wd, fastq.dir, "*.vcf"), "."), ignore.stderr = T)
+		system(paste("mv", file.path(wd, fastq.dir, "*.summary"), "."), ignore.stderr = T)
 	}
 
 	bam.files <- list.files(pattern='.subread.bam$', ignore.case=T)
@@ -168,8 +193,9 @@ align.fastq <- function(fastq.dir, reference, alignment.dir) {
     	    row.names=T, col.names=T, sep='\t')
     }
 	cat('READ ALIGNMENT - DONE')
-	setwd(wd)
-	return(paste(alignment.dir, bam.files, sep="/"))
+	cur.dir <- setwd(wd)
+    if (VERBOSE) cat(">>> returning to", cur.dir, '\n')
+	return(file.path(alignment.dir, bam.files))
 }
 
 
@@ -206,16 +232,17 @@ align.fastq <- function(fastq.dir, reference, alignment.dir) {
 #'
 #' @noexport
 #
-compute.feature.counts <- function(bam.files, annotation, feature.count.dir, requireBothEnds = T) {
+compute.feature.counts <- function(bam.files, annotation, feature.count.dir, paired=T, requireBothEnds = T) {
 
     ref.name  <- sub("\\.[[:alnum:]]+$", "", basename(annotation))
     ref.gtf   <- sub("\\.[[:alnum:]]+$", ".gtf", annotation)
     ref.gff   <- sub("\\.[[:alnum:]]+$", ".gff", annotation)
 	
 	# If feature count data already exists, load it
-    if (file.exists(paste(feature.count.dir, "featureCounts.tab", sep = "/"))){
+    if (file.exists(file.path(feature.count.dir, "featureCounts.tab"))) {
 		
-		fc <- read.delim(paste(feature.count.dir, "featureCounts.tab", sep = "/"), header = TRUE, row.names = 1, sep = "\t")
+		fc <- read.delim(file.path(feature.count.dir, "featureCounts.tab"), 
+                         header = TRUE, row.names = 1, sep = "\t")
 		cat(paste('\nUSING ALREADY EXISTING FEATURE COUNT FILE: ', feature.count.dir, "/featureCounts.tab\n", sep=""))
 		return(fc)
 	}
@@ -231,11 +258,12 @@ compute.feature.counts <- function(bam.files, annotation, feature.count.dir, req
 		annot.ext <- ref.gff
 		isGTF <- FALSE
 	}
-	
+	if (paired == TRUE) requireBothEnds=FALSE
+    
     fc <- featureCounts(files = bam.files, 
 	    				annot.ext = annot.ext, 
         				isGTFAnnotationFile = isGTF,
-	    				isPairedEnd = T, 
+	    				isPairedEnd = paired, 
         				requireBothEndsMapped = requireBothEnds, 
         				primaryOnly = T, 
         				ignoreDup = T, 
@@ -265,26 +293,100 @@ compute.feature.counts <- function(bam.files, annotation, feature.count.dir, req
 	# but they exist only in the RAM memory, they are not stored somewhere safe,
 	# so, we save them and create new variables so as to make it easier for us to 
 	# manipulate the data
-	write.table(fc$counts, file=paste(feature.count.dir, 'featureCounts.tab', sep='/'),
+	write.table(fc$counts, 
+                file=file.path(feature.count.dir, 'featureCounts.tab'),
 				sep = "\t", row.names = TRUE, col.names = TRUE)
-	write.csv(fc$counts, file=paste(feature.count.dir, 'featureCounts.csv', sep='/'))
-	write.table(fc$stats, file=paste(feature.count.dir, 'featureCounts_stat.txt', sep='/'),
-				sep = "\t", row.names = TRUE, col.names = TRUE)
+	write.csv(fc$counts, 
+              file=file.path(feature.count.dir, 'featureCounts.csv'))
+	write.table(fc$stats, 
+                file=file.path(feature.count.dir, 'featureCounts_stat.txt'),
+				sep = "\t", 
+                row.names = TRUE, 
+                col.names = TRUE)
 
 	# save all the contents of 'fc' in an RDS file and in an Rdata file
 
-	saveRDS(fc, file=paste(feature.count.dir, '/featureCounts.rds', sep=''))
-	save(fc, file=paste(feature.count.dir, '/featureCounts.RData', sep=''))
+	saveRDS(fc, file=file.path(feature.count.dir, 'featureCounts.rds'))
+	save(fc, file=file.path(feature.count.dir, 'featureCounts.RData'))
 
 	# 'fc' can later be recovered with:
 	# 		fc <- readRDS(file='featureCounts.rds')  
-	# 		fc <- load(file='featureCounts.RData')
+	# 		load(file='featureCounts.RData')
 		
-	cat('\nFEATURE COUNT FINISHED\n')
+	cat('\nFEATURE COUNTING FINISHED\n')
 	
 	return(fc)
 }
 
+#' get.feature.counts
+#'
+#' look inside feature.counts.dir: if a featureCounts.tab file exists
+#' load it, otherwise, if several count files exist, load and merge
+#' them, save as featureCounts.tab and return the table, and if none
+#' does, the compute the feature counts and return the structured data.
+#'
+get.feature.counts <- function(feature.count.dir, 
+                               alignment.dir=NULL, 
+                               paired=T, 
+                               requireBothEnds=T) {
+                               
+    fcfile <- file.path(feature.count.dir, "featureCounts.RData")
+    if (VERBOSE) cat(">>> Trying to get", fcfile, '\n')
+    if (file.exists(fcfile)) {
+        load(file=fcfile)
+        return(fc$counts)
+    }
+    fcfile <- file.path(feature.count.dir, "featureCounts.rds")
+    if (VERBOSE) cat(">>> Trying to get", fcfile, '\n')
+    if (file.exists(fcfile)) {
+        fc <- readRDS(file='featureCounts.rds')
+        return(fc$counts)
+    }
+    fcfile <- file.path(feature.count.dir, "featureCounts.tab")
+    if (VERBOSE) cat(">>> Trying to get", fcfile, '\n')
+    if (file.exists(fcfile)) {
+	    #### If Rsubread was used:
+	    # One single file was generated with the counts for all samples,
+        # stored in feature.count.dir and named featurCounts.tab
+
+	    cat("\nUsing existing feature count file\n")
+	    fc <- read.delim(fcfile,		### ADRIAN
+					     header = TRUE, row.names = 1, sep = "\t")
+        return(fc)
+    }
+	#### If HTSeq or similar tools are used:
+	# One count file will be generated per sample. We read the files into
+	# a list and convert it into a single data frame.
+	count.files <- list.files(feature.count.dir, pattern = '.*(counts|cnt)$',
+								full.name = TRUE)
+    if (length(count.files) != 0) {
+        cat("\nMerging existing feature count files\n")                      
+	    fc <- merge.count.files(count.files)
+	    if (! file.exists(file.path(feature.count.dir, 'merged_counts.tab')))
+		    write.table(fc, file.path(feature.count.dir, 'merged_counts.tab'),
+                        sep = "\t", row.names = TRUE, col.names = TRUE)
+        # save featureCounts.tab file
+        write.table(fc, fcfile, sep = "\t", row.names = TRUE, col.names = TRUE)
+        return(fc)
+    } 
+    # there are no feature counts of any kind, we need to
+    # calculate them
+	bam.files <- list.files(path = alignment.dir, pattern = '.bam$', full.names = TRUE, ignore.case = TRUE)
+
+	short.title("Computing Feature Counts")
+    cat("using alignments from", alignment.dir, '\n')
+    print(bam.files)
+
+    if (paired == FALSE) requireBothEnds = FALSE
+    # Compute and save fc in cache
+    dir.create(feature.count.dir, showWarnings = FALSE)
+	fc <- compute.feature.counts(bam.files = bam.files, 
+                           annotation = annotation, 
+                           paired=paired,
+                           requireBothEnds = requireBothEnds, 
+                           feature.count.dir = feature.count.dir) 
+    return(fc$counts)
+}
 
 #' merge.count.files
 #'
@@ -334,827 +436,6 @@ merge.count.files <- function(count.files) {
 	return(all.counts)
 }
 
-#' h.cluster.changes
-#'
-#' Cluster gene expression data using hierarchycal clustering
-#' 
-#' @param
-#' 
-#' @return
-#'
-#' @usage
-#' 
-#' @examples
-#'
-#' @author	(C) CNB-CSIC
-#'
-#' @license	EU-GPL
-#'
-#' @noexport
-#
-h.cluster.changes <- function(data.table, annotated.data, 
-                              distance="euclidean",	# see ?dist()
-                              clusters=1,
-                              method="complete",	# see ?hclust()
-                              estimate=TRUE,
-                              interactive=TRUE
-                              ) {
-                              
-
-    # Normalize the data
-    by.row <- 1
-    by.col <- 2
-    dif <- data.table
-    means <- apply(dif, by.col, mean)
-    sds <- apply(dif, by.col, sd)		# standard deviations
-    nor <- scale(dif,center=means,scale=sds)	# normalized values
-
-    # Calculate distance matrix  
-    distan = dist(nor, method=distance)
-
-    # Hierarchical agglomerative clustering  
-    cat.info("
-    H I E R A R C H I C A L   C L U S T E R I N G
-    =============================================
-    \n\n")
-    
-    hc = hclust(distan)
-#    if (verbose) {
-#        as.png(plot(hc), 'hclust.png')
-#        as.png(plot(hc,hang=-1), 'hclust.hang.png')
-#        as.png(plot(hc,labels=rownames(data.table),main='Default from hclust')
-#               "hclust.labelled.png")
-#    }
-    if (interactive) {
-        print(plot(hc,labels=rownames(data.table),main='Default from hclust'))
-        continue.on.enter("Press [ENTER] to continue ")
-    } 
-       
-    # Cluster membership
-    if ((clusters <= 1) & (estimate == T)) {
-        ans <- continue.on.enter(prompt="How many clusters should we use? ")
-        nclust <- as.numeric(ans)
-    } else
-        nclust <- clusters
-    
-    member <- cutree(hc, nclust)	# cut to 4 groups
-    cat.info("Cluster membership counts\n")
-    print(table(member))
-    # Characterizing clusters 
-    cat('\n')
-    cat.info("Means by cluster in the normalized data\n")
-    print(aggregate(nor, list(member), mean))
-    cat('\n')
-    cat.info("Means by cluster in the non-normalized data\n")
-    print(aggregate(dif, list(member), mean))
-
-    for (i in 1:nclust) {
-        clus.i <- member[ member == i ]
-        data.i <- annotated.data[annotated.data$ensembl.gene.id %in% names(clus.i), ]
-        # sort by l2FC
-        data.i <- data.i[order(data.i$log2FoldChange, decreasing=T), ]
-        cat.info("Showing annotation for cluster", i, "(", length(clus.i), " elements)\n")
-        
-        #View(data.i[ , c("log2FoldChange", "GENENAME", "entrezgene_description", "definition_1006")],
-        #     title=paste("Cluster no.", i, "(", length(clus.i), ") elements)"))
-        
-        # or, using tcltk and gWidget2
-        #library(tcltk)
-        #library(gWidgets2)
-        data.to.show <- data.i[ , c("log2FoldChange", "GENENAME", "entrezgene_description", "definition_1006")]
-        # clean up for showing
-        data.to.show[ is.na(data.to.show) ] <- 'NA'
-        window.name <- paste("Cluster no.", i, "(", length(clus.i), " elements)")
-        #window <- gwindow(title=window.name, visible=TRUE)
-        #tab <- gtable(data.to.show,
-        #       container=window)
-        window <- show.data.frame(data.to.show, window.name, visible=F)
-        if (interactive) {
-          visible(window) <- TRUE	# setting it to FALSE removes window
-          keypress()
-          visible(window) <- FALSE
-        }
-    }
-
-    cat.info("
-    
-    Silhouette Plot for hierarchical clustering with normalized data
-    ----------------------------------------------------------------
-    Measure similarity of each object to its own cluster (cohesion) compared to
-    other clusters (dispersion). Values range from -1 to +1. Large values
-    indicate objects well matched to their own cluster and badly to neighboring
-    clusters. If many points have low or negative value, the number of clusters
-    is too low or too high.
-    \n")
-    #if (verbose)
-    #    as.png(plot(silhouette(cutree(hc, nclust), distan)), "silhouette.png")
-    print(plot(silhouette(cutree(hc, nclust), distan)))
-
-    return(hc)
-}
-
-
-
-#' hcut.cluster changes
-#'
-#' Cluster gene expression data using hierarchycal clustering with 'hcut'
-#' 
-#' @param
-#' 
-#' @return
-#'
-#' @usage
-#' 
-#' @examples
-#'
-#' @author	(C) CNB-CSIC
-#'
-#' @license	EU-GPL
-#'
-#' @noexport
-#
-hcut.cluster.changes <- function(data.table, annotated.data,
-                                    algorithm="hclust",	# see ?hcut()
-                                    distance="euclidean", # see ?hcut()
-                                    method="ward.D2",	# see ?hcut()
-                                    clusters=1,	# n. of clusters
-                                    nstart=1,	# ignored
-                                    gap_bootstrap=500,
-                                    estimate=FALSE
-                                    ) {
-
-    # Normalize the data
-    by.row <- 1
-    by.col <- 2
-    dif <- data.table
-    means <- apply(dif, by.col, mean)
-    sds <- apply(dif, by.col, sd)
-    nor <- scale(dif,center=means,scale=sds)
-
-    cat.info("
-    H c u t
-    -------
-    \n")
-
-    if (estimate) {
-        cat("Suggestions for the best number of clusters\n")
-
-        cat("Plot by within-cluster sums of squares\n")
-        cat("    Elbow method: look for a knee\n")
-        print(fviz_nbclust(nor, hcut, method="wss"))
-        continue.on.enter("Press [ENTER] to continue ")
-
-        cat("
-        Average Silhouette Method
-
-        The average silhouette approach measures the quality of a clustering. It
-        determines how well each observation lies within its cluster.
-
-        A high average silhouette width indicates a good clustering. The average
-        silhouette method computes the average silhouette of observations for
-        different values of k.
-        \n")
-        print(fviz_nbclust(nor, hcut, method="silhouette"))
-        continue.on.enter("Press [ENTER] to continue ")
-
-        cat("
-        Gap Statistic Method
-
-        This approach can be utilized in any type of clustering method (i.e.
-        K-means clustering, hierarchical clustering).
-
-        The gap statistic compares the total intracluster variation for different
-        values of k with their expected values under null reference distribution of
-        the data.
-
-        \n")
-        gap_stat <- clusGap(nor, FUN=hcut, nstart=25,
-                            K.max=15, B=gap_bootstrap)
-        print(fviz_gap_stat(gap_stat))
-        continue.on.enter("Press [ENTER] to continue ")
-    }
-
-    # Number of clusters
-    if (clusters == 1) {
-        ans <- continue.on.enter(prompt="How many clusters should we use? ")
-        nclust <- as.numeric(ans)
-    } else
-        nclust <- clusters
-    
-    # clustering (N groups)
-    set.seed(123)
-    hc <- hcut(nor, k=nclust, 
-               hc_func=algorithm, hc_method=method, hc_metric=distance, is_diss=FALSE)
-    print(head(hc))
-    member <- hc$cluster
-    
-    cat.info("Cluster membership counts\n")
-    print(table(member))
-    # Characterizing clusters 
-    cat('\n')
-    cat.info("Means by cluster in the normalized data\n")
-    print(aggregate(nor, list(member), mean))
-    cat('\n')
-    cat.info("\nMeans by cluster in the non-normalized data\n")
-    print(aggregate(dif, list(member), mean))
-
-    for (i in 1:nclust) {
-        clus.i <- member[ member == i ]
-        data.i <- annotated.data[annotated.data$ensembl.gene.id %in% names(clus.i), ]
-        # sort by l2FC
-        data.i <- data.i[order(data.i$log2FoldChange, decreasing=T), ]
-        cat("Showing annotation for cluster", i, "(", length(clus.i), ") elements)\n")
-
-        # invoke a spreadsheet-style data viewer
-        View(data.i[ , c("log2FoldChange", "GENENAME", "entrezgene_description", "definition_1006")],
-             title=paste("Cluster no.", i, "(", length(clus.i), ") elements)"))
- #       keypress()
-    }
-    
-    # plot a PCA of the clusters
-    # If there are more than two dimensions (variables) fviz_cluster will perform
-    # principal component analysis (PCA) and plot the data points according to
-    # the first two principal components that explain the majority of the
-    # variance.
-    print(fviz_cluster(hc, data=nor, geom="point"))
-    continue.on.enter("Press [ENTER] to continue ")
-    # to plot gene names instead of ensembl.ids we need to change rownames to genes
-    gor <- nor 
-    rownames(gor) <- paste(annotated.data[ , "GENENAME"], 1:length(rownames(gor)))
-    print(fviz_cluster(hc, data=gor))
-    continue.on.enter("Press [ENTER] to continue ")
-}
-
-
-
-#' k.means.cluster changes
-#'
-#' Cluster gene expression data using K-means clustering
-#' 
-#' @param
-#' 
-#' @return
-#'
-#' @usage
-#' 
-#' @examples
-#'
-#' @author	(C) CNB-CSIC
-#'
-#' @license	EU-GPL
-#'
-#' @noexport
-#
-k.means.cluster.changes <- function(data.table, annotated.data,
-                                    algorithm="Hartigan-Wong",	# see kmeans()
-                                    clusters=1,	# n. of clusters
-                                    nstart=1,	# n. of random start sets to choose
-                                    estimate=F,
-                                    gap_bootstrap=500
-                                    ) {
-
-    # Normalize the data
-    by.row <- 1
-    by.col <- 2
-    dif <- data.table
-    means <- apply(dif, by.col, mean)
-    sds <- apply(dif, by.col, sd)
-    nor <- scale(dif,center=means,scale=sds)
-
-    cat.info("
-    K - m e a n s
-    -------------
-    \n")
-    
-    if (estimate) {
-        cat("Suggestions for the best number of clusters\n")
-
-        #
-        # Scree Plot
-        cat("
-
-        Scree plot using normalized data
-
-        This allows us to evaluate how much variation we account for as we
-        consider more clusters and decide what a reasonable number of clusters
-        might be.
-        We draw here the variances accounted for using up to 20 K-means clusters
-        \n") 
-        # compute variances by row
-        wss <- (nrow(nor)-1)*sum(apply(nor, by.row, var))
-        for (i in 2:20) wss[i] <- sum(kmeans(nor, centers=i)$withinss)
-        print(plot(1:20, wss, type="b", xlab="Number of Clusters", ylab="Within groups sum of squares") )
-        continue.on.enter("Press [ENTER] to continue ")
-
-        # The scree plot will allow us to see the variabilities in clusters, 
-        # we expect that if we increase the number of clusters, then the 
-        # within-group sum of squares would come down. 
-        #
-
-        cat("Plot by within-cluster sums of squares\n")
-        cat("    Elbow method: look for a knee\n")
-        print(fviz_nbclust(nor, kmeans, method="wss"))
-        continue.on.enter("Press [ENTER] to continue ")
-
-        cat("
-        Average Silhouette Method
-
-        The average silhouette approach measures the quality of a clustering. It
-        determines how well each observation lies within its cluster.
-
-        A high average silhouette width indicates a good clustering. The average
-        silhouette method computes the average silhouette of observations for
-        different values of k.
-        \n")
-        print(fviz_nbclust(nor, kmeans, method="silhouette"))
-        continue.on.enter("Press [ENTER] to continue ")
-
-        cat("
-        Gap Statistic Method
-
-        This approach can be utilized in any type of clustering method (i.e.
-        K-means clustering, hierarchical clustering).
-
-        The gap statistic compares the total intracluster variation for different
-        values of k with their expected values under null reference distribution of
-        the data.
-
-        \n")
-        gap_stat <- clusGap(nor, FUN=kmeans, nstart=25,
-                            K.max=15, B=gap_bootstrap)
-        print(fviz_gap_stat(gap_stat))
-        continue.on.enter("Press [ENTER] to continue ")
-    }
-
-    # Number of clusters
-    if (clusters == 1) {
-        ans <- continue.on.enter(prompt="How many clusters should we use? ")
-        nclust <- as.numeric(ans)
-    } else
-        nclust <- clusters
-    
-    # K-means clustering (N groups)
-    kc <- kmeans(nor, centers=nclust, nstart=nstart, algorithm=algorithm)
-    print(head(kc))
-    member <- kc$cluster
-    
-    cat("Cluster membership counts\n")
-    print(table(member))
-    # Characterizing clusters 
-    cat("\nMeans by cluster in the normalized data\n")
-    print(aggregate(nor, list(member), mean))
-    cat("\nMeans by cluster in the non-normalized data\n")
-    print(aggregate(dif, list(member), mean))
-
-    for (i in (1:nclust)) {
-        clus.i <- member[ member == i ]
-        data.i <- annotated.data[annotated.data$ensembl.gene.id %in% names(clus.i), ]
-        # sort by l2FC
-        data.i <- data.i[order(data.i$log2FoldChange, decreasing=T), ]
-        cat("Showing annotation for cluster", i, "(", length(clus.i), ") elements)\n")
-        View(data.i[ , c("log2FoldChange", "GENENAME", "entrezgene_description", "definition_1006")],
-             title=paste("Cluster no.", i, "(", length(clus.i), ") elements)"))
- #       keypress()
-    }
-    
-    # plot a PCA of the clusters
-    # If there are more than two dimensions (variables) fviz_cluster will perform
-    # principal component analysis (PCA) and plot the data points according to
-    # the first two principal components that explain the majority of the
-    # variance.
-    print(fviz_cluster(kc, data=nor, geom="point"))
-    continue.on.enter("Press [ENTER] to continue ")
-    # to plot gene names instead of ensembl.ids we need to change rownames to genes
-    gor <- nor 
-    rownames(gor) <- paste(annotated.data[ , "GENENAME"], 1:length(rownames(gor)))
-    print(fviz_cluster(kc, data=gor))
-    continue.on.enter("Press [ENTER] to continue ")
-}
-
-
-
-#'
-#' pam.cluster.changes
-#'
-#'  Cluster gene expression data using Partition around medoids clustering
-#' @param
-#' 
-#' @return
-#'
-#' @usage
-#' 
-#' @examples
-#'
-#' @author	(C) CNB-CSIC
-#'
-#' @license	EU-GPL
-#'
-#' @noexport
-#
-pam.cluster.changes <- function(data.table, annotated.data,
-                                    distance="euclidean", 	# see dist()
-                                    metric="euclidean",		# see pam()
-                                    clusters=1,		# n. of clusters
-                                    nstart=1,	# n. of random start sets to choose
-                                    estimate=T,
-                                    gap_bootstrap=500
-                                    ) {
-                                    
-    if (nstart != 1) medoids="random" else medoids=NULL
-        
-    # Normalize the data
-    by.row <- 1
-    by.col <- 2
-    dif <- data.table
-    means <- apply(dif, by.col, mean)
-    sds <- apply(dif, by.col, sd)
-    nor <- scale(dif,center=means,scale=sds)
-
-    cat("
-    Partition around medoids
-    ------------------------
-    \n")
-
-    if (estimate) {
-        cat("Suggestions for the best number of clusters\n")
-
-        cat("    Plot by within-cluster sums of squares\n\n")
-        cat("    Elbow method: look at the knee\n")
-        print(fviz_nbclust(nor, pam, method="wss"))
-        continue.on.enter("Press [ENTER] to continue ")
-
-        cat("
-        Average Silhouette Method
-
-        The average silhouette approach measures the quality of a clustering. It
-        determines how well each observation lies within its cluster.
-
-        A high average silhouette width indicates a good clustering. The average
-        silhouette method computes the average silhouette of observations for
-        different values of k.
-        \n")
-        print(fviz_nbclust(nor, pam, method="silhouette"))
-        continue.on.enter("Press [ENTER] to continue ")
-
-        cat("
-        Gap Statistic Method
-
-        This approach can be utilized in any type of clustering method (i.e.
-        K-means clustering, hierarchical clustering).
-
-        The gap statistic compares the total intracluster variation for different
-        values of k with their expected values under null reference distribution of
-        the data.
-
-        \n")
-        gap_stat <- clusGap(nor, FUN=pam, nstart=25,
-                            K.max=15, B=gap_bootstrap)
-        print(fviz_gap_stat(gap_stat))
-        continue.on.enter("Press [ENTER] to continue ")
-    }
-
-
-    # Number of clusters
-    if (clusters == 1) {
-        ans <- continue.on.enter(prompt="How many clusters should we use? ")
-        nclust <- as.numeric(ans)
-    } else
-        nclust <- clusters
-
-    # cluster with partition around medioids for k=N clusters 
-    # (data is not dissimilarity but distance)
-    # compute distance (we have dissimilarity to a common reference but not
-    # between the considered groups).
-    cat("Computing clusters (may take some time)...\n")
-    eucldist <- dist(nor, method=distance) 
-    #cluster
-    ### NOTE ### NOTE: may be worth trying to cluster separately with diss=TRUE)
-    pam.clus <- pam(eucldist, k=nclust, diss=TRUE)
-    print(head(pam.clus))
-    member <- pam.clus$clustering
-
-    cat("Cluster membership information\n")
-    print(pam.clus$clusinfo)
-    cat("\nMeans by cluster in the normalized data\n")
-    print(aggregate(nor, list(member), mean))
-    cat("\nMeans by cluster in the non-normalized data\n")
-    print(aggregate(dif, list(member), mean))
-    
-    for (i in (1:nclust)) {
-        clus.i <- member[ member == i ]
-        data.i <- annotated.data[annotated.data$ensembl.gene.id %in% names(clus.i), ]
-        # sort by l2FC
-        data.i <- data.i[order(data.i$log2FoldChange, decreasing=T), ]
-        cat("Showing annotation for cluster", i, "(", length(clus.i), ") elements)\n")
-        View(data.i[ , c("log2FoldChange", "GENENAME", "entrezgene_description", "definition_1006")],
-             title=paste("Cluster no.", i, "(", length(clus.i), ") elements)"))
- #       keypress()
-    }
-    
-    # plot the partitioning
-    print(clusplot(pam.clus, shade = FALSE,labels=F,
-	    col.clus="blue",col.p="red",
-            span=FALSE,
-            main="PAM Cluster Mapping",cex=1.2))
-    continue.on.enter("Press [ENTER] to continue ")
-
-    # plot a PCA of the clusters
-    # If there are more than two dimensions (variables) fviz_cluster will perform
-    # principal component analysis (PCA) and plot the data points according to
-    # the first two principal components that explain the majority of the
-    # variance.
-    print(fviz_cluster(pam.clus, data=nor, geom="point"))
-    continue.on.enter("Press [ENTER] to continue ")
-    # to plot gene names instead of ensembl.ids we need to change rownames to genes
-    gor <- nor 
-    rownames(gor) <- paste(annotated.data[ , "GENENAME"], 1:length(rownames(gor)))
-    # this seemingly ignores the data argument!!!
-    print(fviz_cluster(pam.clus, data=gor))
-    continue.on.enter("Press [ENTER] to continue ")
-}
-
-
-#' cluster.changes
-#'
-#' Cluster gene expression data using any of a variety of methods for
-#' clustering
-#' 
-#' @param
-#' 
-#' @return
-#'
-#' @usage
-#' 
-#' @examples
-#'
-#' @author	(C) CNB-CSIC
-#'
-#' @license	EU-GPL
-#'
-#' @noexport
-#
-cluster.changes <- function(data.table, annotated.data,
-                            FUN=hcut,
-                            clusters=1,			# n. of clusters
-                            algorithm="default",	# see below	
-                            distance="default", 	# see below
-                            method="default",		# see see below
-                            nstart=1,		# n. of ran dom start sets to choose
-                            eps=1.0,		# epsilon for DBScan
-                            gap_bootstrap=100,
-                            normalize=TRUE,
-                            estimate=TRUE,	# only if clusters > 1
-                            output.folder=NULL	# NULL => no output desired
-                                    ) {
-# FUN -- one of c(hcut, kmeans, pam)
-# algorithm -- for 'hcut' one of c(_"hclust"_, "agnes", "diana")
-#              for 'kmeans' one of c(_"Hartigan-Wong"_, "Lloyd", "Forgy", "MacQueen")
-#              for 'pam' one of c(_"original"_, "o_1", "o_2", "f_3", "f_4", "f_5", 
-#                       "faster")
-# distance -- for 'hcut' one of c(_"euclidean"_, "manhattan", "maximum", 
-#                       "canberra", "binary", "minkowski", "pearson", "spearman", 
-#                       "kendall")
-#             for 'kmeans' it is ignored
-#             for 'pam' one of c(_"euclidean"_, manhattan")
-#             for 'dbscan' it is ignored
-# method -- for 'hcut' one of c("ward.D"', "ward.D2", "single", "complete", 
-#                       "average" (= UPGMA), "mcquitty" (= WPGMA), 
-#                       "median" (= WPGMC), "centroid" (= UPGMC), 
-#                       "weighted" (=WPGMA), "flexible", "gaverage")
-#             for 'kmeans' ignored
-#             for 'pam' ignored
-#             for 'dbscan' ignored
-
-    # Normalize the data
-    by.row <- 1
-    by.col <- 2
-    if (normalize == TRUE) {
-        means <- apply(data.table, by.col, mean)
-        sds <- apply(data.table, by.col, sd)
-        nor <- scale(data.table,center=means,scale=sds)
-    } else {
-        nor <- data.table
-    }
-
-    fun.name <- deparse(substitute(FUN))
-    cat("
-    C L U S T E R I N G    W I T H :   ", fun.name, "
-    ---------------------------------------------
-    \n")
-
-    # re-activate next line to save computation time
-    #if (clusters > 1) estimate <- FALSE		# we already know the number
-    if (clusters < 1) estimate <- TRUE
-    # we may have clusters == 1 and estimate == FALSE, e.g. to find outliers
-    
-    if (estimate == TRUE) {
-        cat("Suggestions for the best number of clusters using", fun.name, "\n")
-
-        if (normalize == TRUE) {
-            cat("Plot by within-cluster sums of squares\n")
-            cat("    Elbow method: look for a knee (normalized data)\n")
-            print(fviz_nbclust(nor, FUN, method="wss"))
-            out.png <- sprintf("%s/DESeq2_%s_wss.png",
-                output.folder, fun.name)
-            as.png(fviz_nbclust(nor, FUN, method="wss"), out.png)
-            continue.on.enter("Press [ENTER] to continue ")
-        }
-
-        cat("Plot by within-cluster sums of squares\n")
-        cat("    Elbow method: look for a knee (raw data)\n")
-        print(fviz_nbclust(data.table, FUN, method="wss"))
-        out.png <- sprintf("%s/DESeq2_%s_wss.png",
-            output.folder, fun.name)
-        as.png(fviz_nbclust(data.table, FUN, method="wss"), out.png)
-        continue.on.enter("Press [ENTER] to continue ")
-
-        if (fun.name != "dbscan") {
-            cat("
-            Average Silhouette Method
-
-            The average silhouette approach measures the quality of a clustering. It
-            determines how well each observation lies within its cluster.
-
-            A high average silhouette width indicates a good clustering. The average
-            silhouette method computes the average silhouette of observations for
-            different values of k.
-            \n")
-            print(fviz_nbclust(nor, FUN, method="silhouette"))
-            out.png <- sprintf("%s/DESeq2_%s_silhouette.png",
-                output.folder, fun.name)
-            as.png(fviz_nbclust(nor, FUN, method="silhouette"), out.png)
-
-            continue.on.enter("Press [ENTER] to continue ")
-        }
-
-        cat("
-        Gap Statistic Method
-
-        This approach can be utilized in any type of clustering method (e.g.
-        K-means, hierarchical clustering, partition around medoids).
-
-        The gap statistic compares the total intracluster variation for different
-        values of k with their expected values under null reference distribution of
-        the data.
-
-        We are looking for the highest peak identified.
-
-        \n")
-        gap_stat <- clusGap(nor, FUN=FUN, K.max=15, B=gap_bootstrap)
-        print(fviz_gap_stat(gap_stat))
-        out.png <- sprintf("%s/DESeq2_%s_gap_stat.png",
-            output.folder, fun.name)
-        as.png(fviz_gap_stat(gap_stat), out.png)
-        continue.on.enter("Press [ENTER] to continue ")
-    }
-    
-    # Select the number of clusters
-    if ((clusters < 1) & (fun.name != 'dbscan')) {
-        ans <- continue.on.enter(prompt="How many clusters should we use? ")
-        nclust <- as.numeric(ans)
-    } else {
-        nclust <- clusters
-    }
-    
-    # Do the clustering (N groups). This is necessarily method-specific
-    if (fun.name == "hcut") {
-        if (algorithm == "default") algorithm <- 'hclust'
-        if (distance == "default") distance <- "euclidean"
-        if (method == "default") method <- "complete"
-        
-        cl <- hcut(nor, k=nclust, 
-               hc_func=algorithm, hc_method=method, hc_metric=distance, is_diss=FALSE)
-        print(head(cl))
-        member <- cl$cluster
-    } else if (fun.name == "kmeans") {
-        if (algorithm == "default") algorithm <- "Hartigan-Wong"
-        if (distance == "default") distance <- "euclidean"
-        
-        cl <- kmeans(nor, centers=nclust, nstart=nstart, algorithm=algorithm)
-        print(head(cl))
-        member <- cl$cluster
-    } else if (fun.name == "pam") {
-        if (algorithm == "default") algorithm <- "faster"
-        if (distance == "default") distance <- "euclidean"
-        
-        # cluster with partition around medioids for k=N clusters 
-        # (data is not dissimilarity but distance)
-        # compute distance (we have dissimilarity to a common reference but not
-        # between the considered groups).
-        cat("Computing clusters (may take some time)...\n")
-        use_dist_matrix <- FALSE	### NOTE ### fviz_cluster fails, why?
-        if (use_dist_matrix == TRUE) {
-            ### NOTE ### It may be worth trying to cluster with diss=TRUE)
-            # calculate dissimilarity matrix and cluster it
-            #distm <- get_dist(nor, method=distance, stand=TRUE) 
-            cl <- pam(get_dist(nor, method=distance, stand=TRUE),
-                      k=nclust, diss=TRUE, 
-                      nstart=nstart, metric=distance, variant=algorithm)
-        } else {
-            cl <- pam(nor, k=nclust, diss=FALSE, 
-                      nstart=nstart, metric=distance, variant=algorithm)
-        }
-
-        print(head(cl))
-        member <- cl$cluster
-        cat("Summary\n")
-        print(cl$clusinfo)
-    }  else if (fun.name == "dbscan") {
-        if (algorithm == "defaut") algorithm <- "hybrid"
-        if (distance == "default") distance <- "manhattan"
-        cl <- dbscan(nor, eps=eps, MinPts=4, showplot=1)
-        # showplot=1 makes it produce a movie plot
-        continue.on.enter("Press [ENTER] to continue ")
-        print(head(cl))
-        member <- cl$cluster
-        names(member) <- annotated.data$ensembl.gene.id
-        nclust <- max(member)
-        plot(cl, nor, main="DBScan")
-        out.png <- sprintf("%s/DESeq2_%s_plot.png",
-            output.folder, fun.name)
-        as.png(plot(cl, nor, main="DBScan"), out.png)
-        continue.on.enter("Press [ENTER] to continue ")
-    }
-        
-    # this may take very long and is of little use for now
-    if (FALSE) {
-        cat("Distance plot\n")
-        # plot distances
-        distm <- get_dist(nor, distance, stand=TRUE)
-        print(fviz_dist(distm,
-                  gradient=list(low="blue", mid="white", high="red")))
-        out.png <- sprintf("%s/DESeq2_%s_distances.png",
-            output.folder, fun.name)
-         as.png(fviz_dist(distm,
-                    gradient=list(low="blue", mid="white", high="red")),
-                    out.png)
-        continue.on.enter("Press [ENTER] to continue ")
-    }
-    
-    cat("Cluster membership counts\n")
-    print(table(member))
-    # Characterizing clusters 
-    cat("\nMeans by cluster in the normalized data\n")
-    print(aggregate(nor, list(member), mean))
-    cat("\nMeans by cluster in the non-normalized data\n")
-    print(aggregate(data.table, list(member), mean))
-
-    for (i in (min(member):max(member))) {
-        clus.i <- member[ member == i ]
-        data.i <- annotated.data[annotated.data$ensembl.gene.id 
-                                 %in% names(clus.i), ]
-        # sort by l2FC
-        data.i <- data.i[order(data.i$log2FoldChange, decreasing=T), ]
-        cat("Showing annotation for cluster", i, "(", length(clus.i), ") elements)\n")
-        #View(data.i[ , c("log2FoldChange", "GENENAME", "entrezgene_description", "definition_1006")],
-        #     title=paste("Cluster no.", i, "(", length(clus.i), ") elements)"))
-        d <- data.i[ , c("log2FoldChange", "GENENAME", "entrezgene_description", "definition_1006")]
-        d[ is.na(d) ] <- 'NA'
-        t <- paste("Cluster no.", i, "(", length(clus.i), ") elements")
-        w <- show.data.frame(d, t, TRUE)
-        visible(w) <- FALSE
-        #visible(w) <- TRUE
-#        keypress()
-         clus.file <- sprintf("%s/DESeq2_%s_nc=%03d_c=%03d.tab",
-             output.folder, fun.name, max(member), i)
-         write.table(data.i, file=clus.file,
-             row.names=T, col.names=T, sep='\t')
-    }
-    
-    # plot a PCA of the clusters
-    # If there are more than two dimensions (variables) fviz_cluster will perform
-    # principal component analysis (PCA) and plot the data points according to
-    # the first two principal components that explain the majority of the
-    # variance.
-    print(fviz_cluster(cl, data=nor, geom="point", ellipse.type="convex"))
-    out.png <- sprintf("%s/DESeq2_%s_nc=%03d_PCA.png",
-            output.folder, fun.name, max(member))
-    as.png(fviz_cluster(cl, data=nor, geom="point", ellipse.type="convex"),
-           out.png)
-    continue.on.enter("Press [ENTER] to continue ")
-    # to plot gene names instead of ensembl.ids we need to change rownames to genes
-    gor <- nor 
-    rownames(gor) <- paste(annotated.data[ , "GENENAME"], 1:length(rownames(gor)))
-    rcl <- cl
-    if (fun.name == 'hcut') {
-        cat("Setting names to gene names\n")
-        dimnames(rcl$data)[[1]] <- rownames(gor)
-    } else if (fun.name == 'pam') {
-        names(cl$cluster <- rownames(gor))
-    }
-    print(fviz_cluster(rcl, data=gor, 
-              ellipse.type="convex", show.clust.cen=FALSE, labelsize=6))
-    out.png <- sprintf("%s/DESeq2_%s_nc=%03d_PCA_genes.png",
-            output.folder, fun.name, max(member))
-    as.png(fviz_cluster(rcl, data=gor, 
-              ellipse.type="convex", show.clust.cen=FALSE, labelsize=6),
-           out.png)
-    continue.on.enter("Press [ENTER] to continue ")
-    
-    return(cl)
-}
-
-
 
 # # # # edgeR functions
 
@@ -1162,8 +443,12 @@ cluster.changes <- function(data.table, annotated.data,
 # SAVE TOP 'N' GENES
 # ------------------
 # save the table of the n.genes top expressed genes sorted in various orders
-eR.save.top <- function(fit, folder, n.genes=500, sort.by='p', coef=1, p.value=0.01)
+eR.save.top <- function(fit, folder, n.genes=500, sort.by=c('p'), coef=1, p.value=0.01)
 {
+    if (n.genes == 0) {
+        # find out number of genes and save all (that satisfy constraints)
+        n.genes <- dim(fit)[1]
+    }
     for (by in sort.by) {
         # default adjustment is BH
         tt <- topTable(fit, 
@@ -1172,12 +457,13 @@ eR.save.top <- function(fit, folder, n.genes=500, sort.by='p', coef=1, p.value=0
                        sort.by=by, 
                        p.value=p.value)
         
-		file <- paste(folder, 
-                      '/edgeR/cmp_coef=', coef, 
-                      '_top_', n.genes, 
-                      '_by', by, 
-                      '.tab', 
-                      sep='')
+		file <- file.path(folder, 
+                      'edgeR',
+                      paste('cmp_coef=', coef, 
+                            '_top_', n.genes, 
+                            '_by', by, 
+                            '.tab', 
+                            sep=''))
         write.table(tt, file, row.names=T, col.names=T, sep='\t')
     }
 }
@@ -1188,8 +474,10 @@ eR.save.top <- function(fit, folder, n.genes=500, sort.by='p', coef=1, p.value=0
 # ----------------------------
 # we can now run again the topTable and we will have all the annotation 
 # information linked 
-#	n.genes <- 500 ALREADY DEFINED ABOVE
-eR.save.top.annotated <- function(fit, folder, n.genes=500, sort.by='p', coef=1, p.value=0.01) {
+#	n.genes <- 500 is the default
+eR.save.top.annotated <- function(fit, folder, n.genes=500, sort.by=c('p'), coef=1, p.value=0.01) {
+
+    if (n.genes == 0) n.genes <- dim(fit)[1]    # save all (that satisfy constraints)
 
     for (by in sort.by) {
         tt <- topTable(fit, 
@@ -1197,12 +485,13 @@ eR.save.top.annotated <- function(fit, folder, n.genes=500, sort.by='p', coef=1,
                        number=n.genes, 
                        sort.by=by, 
                        p.value=p.value)
-        file <- paste(folder, 
-                      '/edgeR/cmp=', coef, 
-                      '_top_', n.genes, 
-                      '_by_', by, 
-                      '_annotated.tab', 
-                      sep='')
+        file <- file.path(folder, 
+                      'edgeR',
+                      paste('cmp=', coef, 
+                            '_top_', n.genes, 
+                            '_by_', by, 
+                            '_annotated.tab', 
+                            sep=''))
         write.table(tt, file, row.names=T, col.names=T, sep='\t')
     }
 }
@@ -1212,7 +501,10 @@ eR.save.top.annotated <- function(fit, folder, n.genes=500, sort.by='p', coef=1,
 # compare to a threshold and save
 # SAVE TOP RESULTS RELATIVE TO THRESHOLD
 # --------------------------------------
-eR.save.top.treat.ann <- function(fit, folder, n.genes=500, sort.by='p', coef=1, p.value=0.01, threshold=1) {
+eR.save.top.treat.ann <- function(fit, folder, n.genes=500, sort.by=c('p'), coef=1, p.value=0.01, threshold=1) {
+    
+    if (n.genes == 0) n.genes <- dim(fit)[1]    # save all (that satisfy constraints)
+    
     for (by in sort.by) {
         #     vvvvvvvv		here we use topTreat instead of topTable
         tt <- topTreat(fit, 
@@ -1220,13 +512,14 @@ eR.save.top.treat.ann <- function(fit, folder, n.genes=500, sort.by='p', coef=1,
                        number=n.genes, 
                        sort.by=by, 
                        p.value=p.value)
-        file <- paste(folder, 
-                      '/edgeR/cmp=', coef, 
-                      '_top_', n.genes, 
-                      '_by_', by, 
-                      '_lfc>=', threshold, 
-                      '_annotated.tab', 
-                      sep='')
+        file <- file.path(folder, 
+                      'edgeR',
+                      paste('cmp=', coef, 
+                            '_top_', n.genes, 
+                            '_by_', by, 
+                            '_lfc.ge.', threshold, 
+                            '_annotated.tab', 
+                            sep=''))
         write.table(tt, file, row.names=T, col.names=T, sep='\t')
     }
 }
@@ -1234,14 +527,18 @@ eR.save.top.treat.ann <- function(fit, folder, n.genes=500, sort.by='p', coef=1,
 
 
 # save top N genes, annotated with biomart
-eR.save.top.ann.thresh <- function(fit, folder, n.genes=500, sort.by='p', coef=1, p.value=0.01, threshold=1) {
+eR.save.top.ann.thresh <- function(fit, folder, n.genes=500, sort.by=c('p'), coef=1, p.value=0.01, threshold=1) {
+
+    if (n.genes == 0) n.genes <- dim(fit)[1]    # save all (that satisfy constraints)
+
     for (by in sort.by) {
-        file <- paste(folder, 
-                      '/edgeR/cmp=', coef, 
-                      '_top_', n.genes, 
-                      '_by_', by, 
-                      '_lfc>=', threshold, 
-                      '_threshold_annotated.tab', sep='')
+        file <- file.path(folder, 
+                      'edgeR',
+                      paste('cmp=', coef, 
+                            '_top_', n.genes, 
+                            '_by_', by, 
+                            '_lfc.ge.', threshold, 
+                            '_threshold_annotated.tab', sep=''))
         tt <- topTable(fit, 
                        coef=coef, 
                        number=n.genes, 
@@ -1314,7 +611,9 @@ eR.save.fit <- function(fit, name) {
 }
 
 eR.save.top.fit <- function(fit, file, n.genes=500, sort.by='PValue', p.value=0.01) {    # default adjust.method is BH
-    # default p.value is 1 (all genes)
+    if (n.genes == 0) n.genes <- dim(fit)[1]    # select all
+    
+    # default p.value is 1 (all genes up to n.genes)
     tt <- topTags(fit, n=n.genes, sort.by=sort.by, p.value=p.value)
     n <- dim(tt)[1]
     # cap at the maximum number of genes requested
@@ -1374,7 +673,7 @@ eR.differential.gene.expression<- function(counts,
     # independently but since they are all similar in number of reads there 
     # should be no need
 
-    out.png <- paste(folder, '/edgeR/img/edgeR_CPMcounts.png', sep='')
+    out.png <- file.path(folder, 'edgeR', 'img', 'edgeR_CPMcounts.png')
     counts.cpm.plot(counts = counts, cpm = cpm.counts, out.png = out.png)
 
     # we will set up the threshold to 0.25 according on the plot we have drawn
@@ -1410,9 +709,9 @@ eR.differential.gene.expression<- function(counts,
                               ) 
         row.names(f.c000.0) <- row.names(cpmavg)
         l.f.c000.0 <- log2(f.c000.0)
-        write.table(f.c000.0, file=paste(folder, '/edgeR/hand.fc_000.0.tab', sep=''), sep='\t')
-        write.table(l.f.c000.0, file=paste(folder, '/edgeR/hand.lfc_000.0.tab', sep=''), sep='\t')
-        write.table(cpmavg, file=paste(folder, '/edgeR/hand.cpmavg.tab', sep=''), sep='\t')
+        write.table(f.c000.0, file=file.path(folder, 'edgeR', 'hand.fc_000.0.tab'), sep='\t')
+        write.table(l.f.c000.0, file=file.path(folder, 'edgeR', 'hand.lfc_000.0.tab'), sep='\t')
+        write.table(cpmavg, file=file.path(folder, 'edgeR', 'hand.cpmavg.tab'), sep='\t')
     }
 
     # We have manipulated the data discarding whatever is not of high interest
@@ -1429,7 +728,7 @@ eR.differential.gene.expression<- function(counts,
     if (VERBOSE) print(dge$samples)
 
     # Plot the library size of the different samples.
-    out.png <- paste(folder, '/edgeR/img/edgeR_sample_lib_size.png', sep='')
+    out.png <- file.path(folder, 'edgeR', 'img', 'edgeR_sample_lib_size.png')
     as.png(barplot(dge$samples$lib.size, cex.names= 0.8,
 					main = "Library Size",
 					col = dge$samples$group,
@@ -1452,7 +751,7 @@ eR.differential.gene.expression<- function(counts,
 	colors <- morecolors(length(levels(dge$samples$group)))
     group.col <- colors[dge$samples$group] 
 
-    out.png <- paste(folder, '/edgeR/img/edgeR_log2_cpm.png', sep='')
+    out.png <- file.path(folder, 'edgeR', 'img', 'edgeR_log2_cpm.png')
     as.png( {
             par(mfrow=c(1,1))
             boxplot(logcpm, xlab='', ylab=' Log2 counts per million', 
@@ -1463,7 +762,7 @@ eR.differential.gene.expression<- function(counts,
 
     # Now we produce an MDS plot to see any significant difference between the
     # groups
-    out.png <- paste(folder, '/edgeR/img/edgeR_mds_plot.png', sep='')
+    out.png <- file.path(folder, 'edgeR', 'img', 'edgeR_mds_plot.png')
     as.png( {
             par(mfrow= c(1,1))
             plotMDS(dge, col = group.col)
@@ -1474,9 +773,11 @@ eR.differential.gene.expression<- function(counts,
     # We apply a funcion that calculates the variance by rows (genes) and then
     # retrieve the n.genes most DE genes
 
-    cat(paste("\n\tCalculating top", n.genes, "genes with the highest variance\n\n"))   
+    if (n.genes == 0) top.genes <- dim(var)[1]
+    else              top.genes <- n.genes
+    cat(paste("\n\tCalculating top", top.genes, "genes with the highest variance\n\n"))   
 	var_genes <- apply(logcpm, by.rows, var)
-    select_var <- names(sort(var_genes, decreasing=TRUE))[1:n.genes]
+    select_var <- names(sort(var_genes, decreasing=TRUE))[1:top.genes]
     highly_var <- logcpm[select_var,]
     #dim(highly_var)
 
@@ -1484,7 +785,7 @@ eR.differential.gene.expression<- function(counts,
     # (difference in color) margins (something about the labels used), also we
     # reverse the colors because by default the red is associated with low
     # expression and we are more used to it meaning "hot"
-    out.png <- paste(folder, '/edgeR/img/edgeR_heatmap.png', sep='')
+    out.png <- file.path(folder, 'edgeR', 'img', 'edgeR_heatmap.png')
     as.png( {
             #margins <- par("mar")
             #par(mar=c(25, 5, 5, 10))
@@ -1511,7 +812,7 @@ eR.differential.gene.expression<- function(counts,
 	genenames <- ensembldb::select(ens.db, keys = rownames(high_var), 
                 	    keytype = by, 
                 	    columns=c('GENENAME', 'GENEID'))
-	out.png <- paste(folder, '/edgeR/img/edgeR_heatmap.', n,'.png', sep='')
+	out.png <- file.path(folder, 'edgeR', 'img', paste('edgeR_heatmap.', n,'.png', sep=''))
 	as.png( {
         	#margins <- par("mar")
         	#par(mar=c(25, 5, 5, 10))
@@ -1538,7 +839,7 @@ eR.differential.gene.expression<- function(counts,
     dge <- estimateGLMTrendedDisp(dge)
     dge <- estimateTagwiseDisp(dge)
 
-    out.png <- paste(folder, '/edgeR/img/edgeR_BCV_dispersions.png', sep='')
+    out.png <- file.path(folder, 'edgeR', 'img', 'edgeR_BCV_dispersions.png')
     as.png(plotBCV(dge), out.png)
 
     return(dge)
@@ -1797,7 +1098,7 @@ eR.voom.variation.analysis <- function(dge, folder)
     #
     cat("\n\tComputing Mean - Variance Trend\n\n")
     v <- voom(dge, design, plot = FALSE)
-    out.png <- paste(folder, '/edgeR/img/edgeR_voom.png', sep='')
+    out.png <- file.path(folder, 'edgeR', 'img', 'edgeR_voom.png')
     as.png( {
             par(mfrow= c(1,1))
             voom(dge, design, plot = TRUE)
@@ -1847,6 +1148,7 @@ eR.fit.annotate.save <- function(fit,
                             n.genes = 1000	# top N genes to save in tables
                             )
 {
+    if (n.genes == 0) n.genes <- dim(fit)[1]    # save all (that match)
     #---------------------------------------------------------------------------
     #Now is time to connect all the results we have with the existing
     #information  we know from the literature, so we will retrieve infos from
@@ -1886,7 +1188,7 @@ eR.fit.annotate.save <- function(fit,
     # SAVE ANNOTATION
     # ---------------
     # this is all the annotation for all the genes in 'fit'
-    write.table(ens.ann, file=paste(folder, '/annotation/ensembl.annotation.txt', sep=''), 
+    write.table(ens.ann, file=file.path(folder, 'annotation', 'ensembl.annotation.txt'), 
 	    sep='\t', row.names=T, col.names=T)
 
     # check if the amount of genes we have is the same as the number of 
@@ -1898,7 +1200,7 @@ eR.fit.annotate.save <- function(fit,
     } else {
         ens.ann.1 <- ens.ann
     }
-    write.table(ens.ann.1, file=paste(folder, '/annotation/ensembl.annotation.1st.txt', sep=''), 
+    write.table(ens.ann.1, file=file.path(folder, 'annotation', 'ensembl.annotation.1st.txt'), 
 	    sep='\t', row.names=T, col.names=T)
 
 
@@ -1919,11 +1221,11 @@ eR.fit.annotate.save <- function(fit,
     # SAVE THE FULL ANNOTATED FIT
     # ---------------------------
     # save all the contents of 'fit' in an RDS file
-    saveRDS(fit, file = paste(folder, '/edgeR/annotatedVOOMfit.rds', sep=''))
+    saveRDS(fit, file = file.path(folder, 'edgeR', 'annotatedVOOMfit.rds'))
     #	'fit' can later be recovered with: 
     #		fit <- readRDS(file=paste(folder, '/annotatedVOOMfit.rds', sep=''))
     # and save as well as Rdata file
-    save(fit, file = paste(folder, '/edgeR/annotatedVOOMfit.RData', sep=''))
+    save(fit, file = file.path(folder, 'edgeR', 'annotatedVOOMfit.RData'))
     #	'fit' can later be recovered with: 
     #		fc <- load(file=paste(folder, '/annotatedVOOMfit.RData', sep=''))
 
@@ -1986,7 +1288,7 @@ eR.dge.all.comparisons <- function(dge,
 	## estimation.
 	cat("\n\tComputing Quasi-Likelihood Dispersion\n\n")
     qlfit <- glmQLFit(dge, design = design, robust = TRUE, abundance.trend = TRUE)
-    out.png <- paste(folder, '/edgeR/img/edgeR_QLFit_', design.column, '.png', sep='')
+    out.png <- file.path(folder, 'edgeR', 'img', paste('edgeR_QLFit_', design.column, '.png', sep=''))
     as.png(plotQLDisp(qlfit), out.png)
 
     # if we wanted to apply a log-fold-change theshold, we could do
@@ -2002,7 +1304,7 @@ eR.dge.all.comparisons <- function(dge,
         for (j in grps) {
             if (i == j) next	# ignore self-comparisons
             formula <- paste(i, '-', j)
-            cat("\n\n\tComputing DGE:", i, '-', j, '\n\n')
+            cat("\n\n\tedgeR: Computing DGE:", i, '-', j, '\n\n')
             cmp <- makeContrasts(formula, levels = design)
             # glmQLFTest is similar to glmLRT except it uses Bayes quasi-likelihood
             # the P-values are always >= those produced by glmLRT
@@ -2014,8 +1316,9 @@ eR.dge.all.comparisons <- function(dge,
             if (VERBOSE) {
                 print(summary(decideTests(qlf.cmp)))
             }
-            png.file <- paste(folder, "/edgeR/img/edgeR_QLF_MD_", 
-                              design.column, '_', i, '-', j, '.png', sep='')
+            png.file <- file.path(folder, "edgeR", 'img', 
+                              paste("edgeR_QLF_MD_", 
+                                    design.column, '_', i, '-', j, '.png', sep=''))
             as.png( { 
                     plotMD(qlf.cmp)
                     abline(h = c(-1, 1), col="darkgreen")
@@ -2031,21 +1334,23 @@ eR.dge.all.comparisons <- function(dge,
             ### NOTE consider using eR.fit.annotate.ensembl.biomart
             qlf.cmp <- eR.fit.annotate(qlf.cmp, ens.db = ens.db, biomart.db = biomart.db)
 
-            name <- paste(folder, '/edgeR/fit_', design.column, '_', i, '_-_', j, '_annot', sep='')
+            name <- file.path(folder, 'edgeR',
+                    paste('fit_', design.column, '_', i, '_-_', j, '_annot', sep=''))
             # qlf.cmp is a list of tables, if we want to save it,
             # we'll need to save the whole object
             # will add .rds and .RData to the files created
             #
-            eR.save.fit(qlf.cmp, name)
-            # defaults: n.genes=500, sort.by='PValue', p.valu=0.01
-            # we'll save all (<=100.000) significant genes
+            eR.save.fit(qlf.cmp, file=name, n.genes=n.genes)
+            # defaults: n.genes=500, sort.by='PValue', p.value=0.01
+            # we'll save all significant genes
 
-            name <- paste(folder, '/edgeR/comp_', design.column, '_', i, '_-_', j, '_annot', sep='')
+            name <- file.path(folder, 'edgeR', 
+                  paste('comp_', design.column, '_', i, '_-_', j, '_annot', sep=''))
 	    	# qlf.cmp$table is a table with logFC, logCPM, F and PValue
             # that is what weill be saved when using topTags and write.table
             # will add "_top_" n "_by_" sort.by
             # defaults: n.genes=500, sort.by='PValue', p.value=0.01
-            eR.save.top.fit(qlf.cmp, file=name, n.genes=100000)
+            eR.save.top.fit(qlf.cmp, file=name, n.genes=0)
 
             # we can use limma to test for over-representation of gene
             # ontology (GO) terms or KEGG pathways with goana() or kegga()
@@ -2057,8 +1362,9 @@ eR.dge.all.comparisons <- function(dge,
 	    	# eR.go <- goana(qlf.cmp, species="Gg")
 	    	# eR.kegg <- kegga(qlf.cmp, species.KEGG="cjo")
 	    	# eR.kegg <- kegga(qlf.cmp, species.KEGG="gga")
-	    	# topGO(go, sort="up", number=n.genes)
-	    	# topKEGG(keg, sort="up", number=n.genes)
+            # if (n.genes == 0) n.genes <- 1000000 # one million should get all
+	    	# topGO(go, sort="up", number=top.genes)
+	    	# topKEGG(keg, sort="up", number=top.genes)
 
             qlf.result <- list(
 	                      eR.cmp = qlf.cmp
@@ -2159,17 +1465,21 @@ ds2.dds.compare.annotate.save <- function(dds,
 
     # and now save
     # save summary
-    sink(paste(outDir, '/DESeq2/', out.file.base, '_summary.txt', sep=''), split=T)
+    sink(file.path(outDir, 'DESeq2', 
+                   paste(out.file.base, '_summary.txt', sep='')), 
+         split=T)
     summary(cmp)
     sink()
     # unnanotated results object
     saveRDS(cmp, paste(outDir, "/DESeq2/", out.file.base, ".rds", sep=""))
     # annotated results as data frame (table)
     write.table(cmp.df.a,
-	    paste(outDir, "/DESeq2/", out.file.base, "_annotated.tab", sep=""),
+	    file.path(outDir, "DESeq2", 
+                  paste(out.file.base, "_annotated.tab", sep="")),
 	    row.names=T, col.names=T, sep='\t')
     # histogram plot
-    out.png <- paste(folder, '/DESeq2/img/DESeq2_', out.file.base, '_hist.png', sep='')
+    out.png <- file.path(folder, 'DESeq2', 'img',
+                         paste('DESeq2_', out.file.base, '_hist.png', sep=''))
     as.png( {
         margins <- par("mar")
         par(mar=c(5, 5, 5, 5))
@@ -2217,17 +1527,21 @@ ds2.dds.plot.and.save <- function(dds,
 
     # and now save
     # save summary
-    sink(paste(outDir, '/DESeq2/raw/raw_', out.base, '_summary.txt', sep=''), split=T)
+    sink(file.path(outDir, 'DESeq2', 'raw',
+         paste('raw_', out.base, '_summary.txt', sep='')), split=T)
     summary(raw)
     sink()
     # unnanotated results object
-    saveRDS(raw, paste(outDir, "/DESeq2/raw/raw_", out.base, ".rds", sep=""))
+    saveRDS(raw, file.path(outDir, "DESeq2", "raw", 
+                           paste("raw_", out.base, ".rds", sep="")))
     # annotated results as data frame (table)
     write.table(raw.df,
-	    paste(outDir, "/DESeq2/raw/raw_", out.base, "_annotated.tab", sep=""),
+	    file.path(outDir, "DESeq2", "raw", 
+                  paste("raw_", out.base, "_annotated.tab", sep="")),
 	    row.names=T, col.names=T, sep='\t')
     # histogram plot
-    out.png <- paste(folder, '/DESeq2/img/DESeq2_raw', out.base, '_hist.png', sep='')
+    out.png <- file.path(folder, 'DESeq2', 'img',
+                    paste('DESeq2_raw', out.base, '_hist.png', sep=''))
     as.png( {
         margins <- par("mar")
         par(mar=c(5, 5, 5, 5))
@@ -2239,7 +1553,8 @@ ds2.dds.plot.and.save <- function(dds,
     # now we'll shrink the data to improve visualization and ranking
     shrunk.lfc <- lfcShrink(dds, contrast=c(column, x, y), type="ashr")
     if (save) {
-        ofile <- paste(outDir, "/DESeq2/img/DESeq2_", out.base, "_raw+shrunk_MA.png", sep='')
+        ofile <- file.path(outDir, "DESeq2", "img", 
+                  paste("DESeq2_", out.base, "_raw+shrunk_MA.png", sep=''))
         cat("    plotting", ofile, '\n')
     } else ofile <- NULL
     as.png( {
@@ -2283,13 +1598,14 @@ ds2.dds.plot.and.save <- function(dds,
     # ggplot does not work inside a function, so this code seems useless
     if (FALSE) {
         if (save) {
-            ofile <- paste(outDir, "/DESeq2/img/DESeq2_", out.base, "_l2FCshrunk.png", sep='')
+            ofile <- file.path(outDir, "DESeq2", "img", 
+                      paste("DESeq2_", out.base, "_l2FCshrunk.png", sep=''))
             cat("    plotting", ofile, '\n')
         } else ofile <- NULL
         as.png( {
             ggplot(ann.shrunk, 
-              aes(x = log2(baseMean), y=logFC),
               environment=environment()) + # this is supposed to make it work in a local env
+                aes(x = log2(baseMean), y=logFC) +
                 geom_point(aes(colour=FDR < alpha), shape=20, size=0.5) +
                 geom_text(data=~top_n(.x, 10, wt=-FDR), aes(label=SYMBOL)) +
                 labs(x="mean of normalised counts", y="log fold change")
@@ -2297,10 +1613,12 @@ ds2.dds.plot.and.save <- function(dds,
     }
 
     if (save) {
-        ofile <- paste(outDir, "/DESeq2/shrunk/shrunk_", out.base, ".rds", sep='')
+        ofile <- file.path(outDir, "DESeq2", "shrunk", 
+                      paste("shrunk_", out.base, ".rds", sep=''))
         cat("    saving", ofile, '\n')
         saveRDS(shrunk.lfc, file=ofile)
-        ofile <- paste(outDir, "/DESeq2/shrunk/shrunk_", out.base, "_annotated.tab", sep='')
+        ofile <- file.path(outDir, "DESeq2", "shrunk", 
+                      paste("shrunk_", out.base, "_annotated.tab", sep=''))
         cat("    saving", ofile, '\n')
         write.table(ann.shrunk, 
                     file=ofile,
@@ -2311,7 +1629,8 @@ ds2.dds.plot.and.save <- function(dds,
     signif <- raw[ raw$padj < alpha, ]
     signif$abs_lfc <- abs(signif$log2FoldChange)
     if (save) {
-        ofile <- paste(folder, '/DESeq2/signif/signif_', out.base, "_α<", alpha, ".tab", sep='')
+        ofile <- file.paste(folder, 'DESeq2', 'signif', 
+                   paste('signif_', out.base, "_??<", alpha, ".tab", sep=''))
         cat("    saving", ofile, '\n')
         write.table(signif, 
                 file=ofile, 
@@ -2324,7 +1643,8 @@ ds2.dds.plot.and.save <- function(dds,
                         signif$padj,
                         decreasing=c(T, F)), ]
     if (save) {
-        ofile <- paste(folder, "/DESeq2/signif/signif_sorted_", out.base, ".tab", sep='')
+        ofile <- file.path(folder, "DESeq2", "signif",
+                  paste("signif_sorted_", out.base, ".tab", sep=''))
         cat("    saving", ofile,'\n')
         write.table(srt, 
                 file=ofile, 
@@ -2337,7 +1657,8 @@ ds2.dds.plot.and.save <- function(dds,
     srt.df <- cbind(srt.df, 
                 biomart.ann[ match(srt.df$ensembl.gene.id, biomart.ann$ensembl_gene_id, nomatch = NA), ])
     if (save) {
-        ofile <- paste(folder, "/DESeq2/signif/signif_sorted_", out.base, "_annotated.tab", sep='')
+        ofile <- file.path(folder, "DESeq2", "signif",
+                 paste("signif_sorted_", out.base, "_annotated.tab", sep=''))
         cat("    saving", ofile,'\n')
         write.table(srt.df, 
                 file=ofile, 
@@ -2410,7 +1731,7 @@ ds2.interactively.plot.top.up.down.regulated.gene <- function(dds,
 
 # 1) ANNOTATE RESULTS
 
-annotateDESeqResults <- function(results,
+DESeqAnnotateResults <- function(results,
 				ensembl.db,
 				biomart.db,
 				org.db = NULL,
@@ -2423,24 +1744,24 @@ annotateDESeqResults <- function(results,
 	
 	## Get gene annotation from ENSEMBL databsase and BioMart database
 
-	if ( ! file.exists(paste(annotation.dir, 'ensembl.annotation.1st.txt', sep = '/'))) {
+	if ( ! file.exists(file.path(annotation.dir, 'ensembl.annotation.1st.txt'))) {
 		ensembl.ann <- annotateGenesFromENSEMBL(ensembl.db = ensembl.db,
 							gene.ids = rownames(results),
 							save = save,
 							out.dir = annotation.dir)
 	} else {
-		ensembl.ann <- read.table(paste(annotation.dir, 'ensembl.annotation.1st.txt', sep = '/'))
+		ensembl.ann <- read.table(file.path(annotation.dir, 'ensembl.annotation.1st.txt'))
 	}
 	
 	if ( ! is.null(org.db) ){
 		## Get gene annotation from ENSEMBL databsase and BioMart database
-		if ( ! file.exists(paste(annotation.dir, 'orgDb.GO.annotation.1st.txt', sep = '/'))) {
+		if ( ! file.exists(file.path(annotation.dir, 'orgDb.GO.annotation.1st.txt'))) {
 			org.ann <- annotateGenesFromORG(org.db = org.db,
 								gene.ids = rownames(results),
 								save = save,
 								out.dir = annotation.dir)
 		} else {
-			org.ann <- read.table(paste(annotation.dir, 'orgDb.GO.annotation.1st.txt', sep = '/'))
+			org.ann <- read.table(file.path(annotation.dir, 'orgDb.GO.annotation.1st.txt'))
 		}
 	}
 	
@@ -2469,6 +1790,7 @@ annotateDESeqResults <- function(results,
 		res.ann[i] <- ensembl.ann[match(res.ann$gene.id, ensembl.ann[,by], nomatch = NA), i]
 	}	
 	
+    ### XXX JR XXX ### THIS SHOULD BE A FUNCTION annotateGenesFromBiomaRt()
 	# BIOMART ENTREZ ACCESSION match the GENE.IDs from our results dataframe
 	#res.ann <- cbind(res.ann, biomart.ann[ match(res.ann$ensembl.gene.id, biomart.ann$entrezgene_accession), ])
 	for (i in colnames(biomart.ann)){
@@ -2494,16 +1816,18 @@ annotateDESeqResults <- function(results,
 	## Save annotated results as data frame (table)
 	if (save){
 		write.table(data.frame(res.ann), sep = "\t",
-					file = paste(out.dir, '/DESeq2/', out.file.base, '_ann_results.tab', sep = ''),
+					file = file.path(out.dir, 'DESeq2', 
+                           paste(out.file.base, '_ann_results.tab', sep = '')),
 					row.names = TRUE, col.names = TRUE)
 
-		saveRDS(res.ann, paste(out.dir, "/DESeq2/", out.file.base, "_ann_results.rds", sep=""))
+		saveRDS(res.ann, file.path(out.dir, "DESeq2", 
+                           paste(out.file.base, "_ann_results.rds", sep="")))
 	}
 	return(res.ann)
 }
 
 # 2) COMPARE AND ANNOTATE RESULTS FROM DESEQ2 OBJECT
-ddsCompareAnnotate <- function(	dds, 
+DESeqCompareAndAnnotate <- function(	dds, 
 								contrast,			# c(factor, numerator, denominator) 
 								filterFun = ihw,	# IHW increases statistical power
 								alpha = 0.01,
@@ -2515,7 +1839,8 @@ ddsCompareAnnotate <- function(	dds,
 								save = TRUE,
 								out.file.base,
 								out.dir ) {
-
+    
+    if (VERBOSE) cat(">>> DESeqCompareAndAnnotate: contast =", contrast, '\n')
 	results <- results(dds,
 					contrast = contrast, 
 					pAdjustMethod="BH",
@@ -2534,19 +1859,22 @@ ddsCompareAnnotate <- function(	dds,
 	
 		## Save comparison results
 		write.table(data.frame(results),
-				file = paste(out.dir, '/DESeq2/raw/', out.file.base, '_raw_results.tab', sep = ''),
+				file = file.path(out.dir, 'DESeq2', 'raw', 
+                       paste(out.file.base, '_raw_results.tab', sep = '')),
 				row.names = TRUE, col.names = TRUE)
 
-		saveRDS(results, paste(out.dir, "/DESeq2/raw/", out.file.base, "_raw_results.rds", sep=""))
+		saveRDS(results, file.path(out.dir, "DESeq2", "raw", 
+                         paste(out.file.base, "_raw_results.rds", sep="")))
 	
 		## Save summary
-		sink(paste(out.dir, '/DESeq2/', out.file.base, '_summary.txt', sep=''), split=T)
+		sink(file.path(out.dir, 'DESeq2', 
+             paste(out.file.base, '_summary.txt', sep='')), split=T)
 		summary(results)
 		sink()
 	}
 	
 	if (annotate){
-		results <- annotateDESeqResults(results = results,
+		results <- DESeqAnnotateResults(results = results,
 										ensembl.db = ensembl.db,
 										biomart.db = biomart.db,
 										org.db = org.db,
@@ -2576,7 +1904,7 @@ top_n <- function(ds, n, col = "padj", decreasing = F) {
 
 # 4) PERFORM DESEQ2 COMPARISON, ANNOTATE AND PLOT THE RESULTS
 
-analysePlotDESeq <- function(	#results,
+DESeqCompareAndPlot <- function(	#results,
 								dds, 
 								contrast,			# c(factor, numerator, denominator) 
 								filterFun = ihw,	# IHW increases statistical power
@@ -2592,17 +1920,20 @@ analysePlotDESeq <- function(	#results,
 								out.file.base,
 								out.dir ) {
 
+    if (VERBOSE) cat(">>> DESeqCompareAndPlot: contrast =", contrast, '\n')
     ## Provide default output base name
     if (missing(out.file.base)) {
 		out.file.base <- paste(contrast[1], contrast[2], 'vs', contrast[3], sep = '_')
 	}
 
     ## Check if final comparison results already exist. If so 
-	if ( ! file.exists(paste(out.dir, "/DESeq2/", out.file.base, "_final_result_list.rds", sep = "")) || (overwrite == TRUE)){
+	if ( ! file.exists(file.path(out.dir, "DESeq2", 
+                       paste(out.file.base, "_final_result_list.rds", sep = ""))) 
+        || (overwrite == TRUE)) {
 
 		## Check if DESeqResults object is provided
-		
-		results <- ddsCompareAnnotate(	
+		if (VERBOSE) cat(">>> DESeqCompareAndAnnotate: contrast =", contrast, '\n')
+		results <- DESeqCompareAndAnnotate(	
 							dds = dds, 
 							contrast = contrast,
 							filterFun = ihw,
@@ -2618,7 +1949,8 @@ analysePlotDESeq <- function(	#results,
 
 		## Histogram plot p-value distribution
 		if (save) {
-			out.png <- paste(out.dir, '/DESeq2/img/DESeq2_', out.file.base, '_padj_hist.png', sep='')
+			out.png <- file.path(out.dir, 'DESeq2', 'img',
+                       paste('DESeq2_', out.file.base, '_padj_hist.png', sep=''))
 		} else out.png <- NULL
 
 		as.png( {
@@ -2637,7 +1969,8 @@ analysePlotDESeq <- function(	#results,
 		shrunk.lfc <- lfcShrink(dds = dds, coef = coef, type = shrnk.type)
 		
 		if (save) {
-		    out.png <- paste(out.dir, "/DESeq2/img/DESeq2_", out.file.base, "_shrunk_", shrnk.type, "_MA.png", sep='') 
+		    out.png <- file.path(out.dir, "DESeq2", "img",
+               paste("DESeq2_", out.file.base, "_shrunk_", shrnk.type, "_MA.png", sep='')) 
 		} else out.png <- NULL
 		
 		as.png( {
@@ -2674,11 +2007,13 @@ analysePlotDESeq <- function(	#results,
 		## Save shrunken results
 		if (save) {
 		
-		    out.file <- paste(out.dir, "/DESeq2/shrunk/", out.file.base, "_shrunk_", shrnk.type, "_raw_results.rds", sep='')
+		    out.file <- file.path(out.dir, "DESeq2", "shrunk", 
+                  paste(out.file.base, "_shrunk_", shrnk.type, "_raw_results.rds", sep=''))
 		    cat("\n\tSaving", out.file, '\n\n')
 		    saveRDS(shrunk.lfc, file=out.file)
 		
-			out.file <- paste(out.dir, "/DESeq2/shrunk/", out.file.base, "_shrunk_", shrnk.type, "_raw_results.tab", sep='')
+			out.file <- file.path(out.dir, "DESeq2", "shrunk", 
+                paste(out.file.base, "_shrunk_", shrnk.type, "_raw_results.tab", sep=''))
 			cat("\tSaving", out.file, '\n')
 			write.table(shrunk.lfc, 
 				        file=out.file,
@@ -2688,43 +2023,46 @@ analysePlotDESeq <- function(	#results,
 		## Annotate shrunken data for visualization in MA plot	
 		if (annotate) {
 			
-			ann.shrunk <- annotateDESeqResults(results = shrunk.lfc,
-									ensembl.db = ensembl.db,
-									biomart.db = biomart.db,
-									org.db = org.db,
-									annotation.dir = annotation.dir,
-									save = FALSE)	
+			ann.shrunk <- DESeqAnnotateResults(results = shrunk.lfc,
+									ensembl.db=ensembl.db,
+									biomart.db=biomart.db,
+									org.db=org.db,
+									annotation.dir=annotation.dir,
+									save=FALSE)	
 			if (save) {
 
 			## Save shrunken annotated results		
-				out.file <- paste(out.dir, "/DESeq2/shrunk/", out.file.base, "_shrunk_", shrnk.type, "_ann_results.rds", sep='')
+				out.file <- file.path(out.dir, "DESeq2", "shrunk", 
+                    paste(out.file.base, "_shrunk_", shrnk.type, "_ann_results.rds", sep=''))
 				cat("\n\tSaving", out.file, '\n\n')
 				saveRDS(ann.shrunk, file=out.file)
 			
-				out.file <- paste(out.dir, "/DESeq2/shrunk/", out.file.base, "_shrunk_", shrnk.type, "_ann_results.tab", sep='')
+				out.file <- file.path(out.dir, "DESeq2", "shrunk", 
+                    paste(out.file.base, "_shrunk_", shrnk.type, "_ann_results.tab", sep=''))
 				cat("\tSaving", out.file, '\n')
 				write.table(ann.shrunk, 
 					        file=out.file,
-					        row.names=T, col.names=T, sep='\t')
+					        row.names=T, 
+                            col.names=T, 
+                            sep='\t')
 			}
 		# Else, unnannotated shrunk.lfc will be represented in 
 		} else ann.shrunk <- shrunk.lfc
 		
 		if (FALSE) {
 		    if (save) {
-		        out.file <- paste(out.dir, "/DESeq2/img/DESeq2_", out.file.base, "_shrunk_", shrnk.type, "_l2FC.png", sep='')
+		        out.file <- file.path(out.dir, "DESeq2", "img",
+                    paste("DESeq2_", out.file.base, "_shrunk_", shrnk.type, "_l2FC.png", sep=''))
 		        cat("\n\tPlotting", out.file, '\n\n')
 		    } else out.file <- NULL
 		    
 		    as.png( {
 					ggplot2::ggplot(data.frame(ann.shrunk), 
-					ggplot2::aes(x = log2(baseMean), y=log2FoldChange),
 					environment=environment()) + 	# this is supposed to make it work in a local env
-					
+					ggplot2::aes(x = log2(baseMean), y=log2FoldChange) +					
 					ggplot2::geom_point(ggplot2::aes(colour = padj < alpha), shape = 10, size = 1) +
-					
-					#ggplot2::geom_text(data=~top_n(.x, 10, wt=-padj),
-					ggplot2::geom_text(data = top_n(ann.shrunk, 10, "padj"),
+					#ggplot2::geom_text(data=~top_n(.x, 10, wt=-padj) +
+					ggplot2::geom_text(data = top_n(ann.shrunk, 10, "padj") +
 					ggplot2::aes(label = rownames(ann.shrunk))) +
 					ggplot2::labs(x="Log2 Mean of Normalised Counts", y="Log2 Fold Change")
 		    
@@ -2736,7 +2074,8 @@ analysePlotDESeq <- function(	#results,
 		signif$abs_lfc <- abs(signif$log2FoldChange)
 		
 		if (save) {
-		    out.file <- paste(out.dir, '/DESeq2/signif/signif_', out.file.base, "_α<", alpha, ".tab", sep='')
+		    out.file <- file.path(out.dir, 'DESeq2', "signif",
+                paste('signif_', out.file.base, "_alpha<", alpha, ".tab", sep=''))
 		    cat("\n\tSaving", out.file, '\n')
 		    write.table(data.frame(signif), file = out.file, sep = '\t', row.names = T, col.names = T)
 		}
@@ -2747,7 +2086,8 @@ analysePlotDESeq <- function(	#results,
 								signif$padj,
 								decreasing=c(T, F)), ]
 		if (save) {
-		    out.file <- paste(out.dir, "/DESeq2/signif/signif_sorted_", out.file.base, ".tab", sep='')
+		    out.file <- file.path(out.dir, "DESeq2", "signif",
+                paste("signif_sorted_", out.file.base, ".tab", sep=''))
 		    cat("\tSaving", out.file,'\n\n')
 		    write.table(srt.signif, file = out.file, sep = '\t', row.names = T, col.names = T)
 		}
@@ -2764,8 +2104,10 @@ analysePlotDESeq <- function(	#results,
 		
 		# Save results as an object to avoid redundant analyses.
 		cat("\n\tSaving final results ...\n\n")		
-		saveRDS(res.list, file=paste(out.dir, "/DESeq2/", out.file.base, "_final_result_list.rds", sep=''))
-		save(res.list, file=paste(out.dir, "/DESeq2/", out.file.base, "_final_result_list.RData", sep=''))
+		saveRDS(res.list, file=file.path(out.dir, "DESeq2", 
+            paste(out.file.base, "_final_result_list.rds", sep='')))
+		save(res.list, file=file.path(out.dir, "DESeq2", 
+            paste(out.file.base, "_final_result_list.RData", sep='')))
 		
 		cat("\n =========================== \n")
 		cat(  "| A N A L Y S I S   D O N E |\n")
@@ -2774,9 +2116,10 @@ analysePlotDESeq <- function(	#results,
 	} else {
     
 		cat("\n\t Loading from file ", basename(out.file.base), "_final_result_list.rds", "\n\n", sep = "")
-    	res.list <- readRDS(paste(out.dir, "/DESeq2/", out.file.base, "_final_result_list.rds", sep = ""))
+    	res.list <- readRDS(file.path(out.dir, "DESeq2", 
+            paste(out.file.base, "_final_result_list.rds", sep = "")))
 		#load(paste(out.dir, "/DESeq2/", out.file.base, "_final_result_list.RData", sep = ""))
 		cat("\n\t DONE! \n\n")
-        }
-        return(res.list)
+    }
+    return(res.list)
 }

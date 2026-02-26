@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#org='cjo'
+#org='cjo'      # no longer used
 #org='gga'
 
 # Start with GO
@@ -50,7 +50,7 @@ cat >> index.html << END
 <center>
 <a id="gographs"></a>
 <a href="${base}.GOdotplot.png"><img src="${base}.GOdotplot.png" width="256" height="256" alt="dotplot"></img></a>
-<a href="${base}.GOemmaplot.png"><img src="${base}.GOemmaplot.png" width="256" height="256" alt="emmaplot"></img></a>
+<a href="${base}.GOemapplot.png"><img src="${base}.GOemapplot.png" width="256" height="256" alt="emapplot"></img></a>
 <a href="${base}.GOridgeplot.png"><img src="${base}.GOridgeplot.png" width="256" height="256" alt="ridgeplot"></img></a>
 </center>
 <p>(click to enlarge)</p>
@@ -135,7 +135,7 @@ cat >> index.html <<END
 <center>
 <a id="kegggraphs"></a>
 <a href="${base}.KEGGdotplot.png"><img src="${base}.KEGGdotplot.png" width="256" height="256" alt="dotplot"></img></a>
-<a href="${base}.KEGGemmaplot.png"><img src="${base}.KEGGemmaplot.png" width="256" height="256" alt="emmaplot"></img></a>
+<a href="${base}.KEGGemapplot.png"><img src="${base}.KEGGemapplot.png" width="256" height="256" alt="emapplot"></img></a>
 <a href="${base}.KEGGridgeplot.png"><img src="${base}.KEGGridgeplot.png" width="256" height="256" alt="ridgeplot"></img></a>
 <a href="${base}.KEGGcnetplot.png"><img src="${base}.KEGGcnetplot.png" width="256" height="256" alt="cnetplot"></img></a>
 <p>(click to enlarge)</p>

@@ -1,3 +1,4 @@
+# number of top up- and down-regulated genes
 topUp=`cat topUp* | wc -l`
 topDn=`cat topDn* | wc -l`
 
@@ -25,12 +26,12 @@ cat > index.html <<END
 <center><a href="fgsea.GSEAtable.png"><img src="fgsea.GSEAtable.png" width="256" height="256"></img></a>
 <p>(click to enlarge)</p></center>
 
-<p>The leading edge subset of a gene set is the subset of members that
-is most affected. For a positive ES,
-the leading edge subset is the set of members that appear in the ranked list
-prior to the peak score. For a negative ES, it is the set of members that
-appear subsequent to the peak score. The plots help you get an idea of how
-many genes in the pathway/ontology group are the most affected.</p>
+<p>The leading edge subset of a gene set is the subset of members that is
+most affected. For a positive ES, the leading edge subset is the set of
+members that appear in the ranked list prior to the peak score. For a
+negative ES, it is the set of members that appear subsequent to the peak
+score. The plots help you get an idea of how many genes in the
+pathway/ontology group are the most affected.</p>
 
 <p><a href="http://www.gsea-msigdb.org/gsea/doc/GSEAUserGuideTEXT.htm#_Enrichment_Score_(ES)">Help on interpreting the graphic</a></p>
 
