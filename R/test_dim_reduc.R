@@ -602,7 +602,150 @@ imp_cor <- function (formula, data, verbose=T) {
     return(data_cor)
 }
 
+tc.i.cor$abs_COR = abs(tc.i.cor$COR)
+filtered <- subset(tc.i.cor, abs_COR > 0.9)
 
+# Crear el gr?fico
+ggplot(filtered, aes(x = seq_along(rownames(filtered)), y = abs_COR)) +
+  geom_point() +
+  geom_line(group = 1) +  # A?ade una l?nea para conectar los puntos
+  theme(axis.text.x = element_blank(),  # Quita las etiquetas del eje x
+        axis.ticks.x = element_blank()) +  # Quita las marcas del eje x
+  labs(title = "Correlaci?n Absoluta de Genes", x = "Genes", y = "Valor Absoluto de COR") +
+  ylim(0,1)
+  
+
+ggplot(tc.i.cor, aes(x = rownames(tc.i.cor), y = COR)) +
+  geom_point() +
+  geom_line(group = 1) +  # A?ade una l?nea para conectar los puntos
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotar etiquetas de eje x
+  labs(title = "Correlaci?n de Genes", x = "Genes", y = "Valor de COR")
+  
+data <- tc.i.cor
+
+# Contar los genes con correlaci?n por encima de 0.8 y 0.9
+num_above_07 <- sum(data$abs_COR > 0.7)
+num_above_08 <- sum(data$abs_COR > 0.8)
+num_above_09 <- sum(data$abs_COR > 0.9)
+
+# Calcular el porcentaje de genes con correlaci?n por encima de 0.8 y 0.9
+total_genes <- nrow(data)
+percent_above_07 <- (num_above_07 / total_genes) * 100
+percent_above_08 <- (num_above_08 / total_genes) * 100
+percent_above_09 <- (num_above_09 / total_genes) * 100
+
+# Mostrar los resultados
+percent_above_07
+percent_above_08
+percent_above_09
+
+
+vars_set1 <- c("ENSCJPG00005016225", "ENSCJPG00005008866", "ENSCJPG00005008987",
+               "ENSCJPG00005009536", "ENSCJPG00005019500", "ENSCJPG00005014715",
+               "ENSCJPG00005016809", "ENSCJPG00005011518", "ENSCJPG00005009512",
+               "ENSCJPG00005020815", "ENSCJPG00005009035", "ENSCJPG00005015798",
+               "ENSCJPG00005010014", "ENSCJPG00005010016", "ENSCJPG00005010356")
+
+# Segundo conjunto de variables
+vars_set2 <- c("ENSCJPG00005009035", "ENSCJPG00005014419", "ENSCJPG00005017217",
+               "ENSCJPG00005005973", "ENSCJPG00005016294", "ENSCJPG00005013224",
+               "ENSCJPG00005011999", "ENSCJPG00005004041", "ENSCJPG00005016087",
+               "ENSCJPG00005020616", "ENSCJPG00005012588", "ENSCJPG00005018907",
+               "ENSCJPG00005020471", "ENSCJPG00005000042")
+
+# Calcular la matriz de correlaci?n para todas las variables combinadas
+all_vars <- unique(c(vars_set1, vars_set2))
+cor_matrix <- cor(tc[, all_vars], use = "pairwise.complete.obs")
+
+# Extraer las correlaciones entre los conjuntos de variables
+correlations <- cor_matrix[vars_set1, vars_set2]
+
+# Convertir la matriz de correlaciones en un vector
+cor_vector <- as.vector(correlations)
+
+# Calcular el valor medio de todas las combinaciones
+mean_correlation <- mean(cor_vector, na.rm = TRUE)
+
+# Mostrar la matriz de correlaciones y el valor medio
+correlations
+mean_correlation
+
+library(ggplot2)
+library(reshape2)
+
+melted_correlations <- melt(correlations)
+
+ggplot(data = melted_correlations, aes(x = Var2, y = Var1, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1, 1), space = "Lab", 
+                       name="Correlaci?n") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                                   size = 9, hjust = 1)) +
+  labs(title = "Mapa de Calor de Correlaciones", x = "Variables Stepwise", y = "Variables Lasso")
+  
+tc.i.cor_sorted <- tc.i.cor[order(-tc.i.cor$abs_COR), ]
+
+# Seleccionar las 15 variables con el mayor valor absoluto de COR
+top_15_vars <- head(tc.i.cor_sorted, 15)
+
+# Mostrar las 15 variables seleccionadas
+top_15_vars
+
+
+vars_set3 <- c("ENSCJPG00005009035", "ENSCJPG00005010014", "ENSCJPG00005020815",
+               "ENSCJPG00005000589", "ENSCJPG00005008987", "ENSCJPG00005019697",
+               "ENSCJPG00005016809", "ENSCJPG00005006593", "ENSCJPG00005019143",
+               "ENSCJPG00005010016", "ENSCJPG00005007749", "ENSCJPG00005013740",
+               "ENSCJPG00005006381", "ENSCJPG00005016758", "ENSCJPG00005013900")
+	       
+common_vars <- intersect(intersect(vars_set1, vars_set2), vars_set3)
+
+library(Metrics)
+
+formula <- as.formula(paste("pfu ~", paste(vars_set3, collapse = " + ")))
+
+# Ajustar el modelo lineal
+model <- lm(formula, data = tc)
+
+# Mostrar el resumen del modelo
+summary(model)
+
+predictions <- predict(model, newdata = tc)
+
+# Calcular el RMSE
+actuals <- tc$pfu
+rmse_value <- rmse(actuals, predictions)
+
+# Mostrar el RMSE
+rmse_value
+
+library(caret)
+
+# Configuraci?n de validaci?n cruzada
+train_control <- trainControl(method = "cv", number = 10)
+
+# Ajustar el modelo con validaci?n cruzada
+cv_model <- train(formula, data = tc, method = "lm", trControl = train_control)
+
+# Mostrar los resultados
+print(cv_model)
+
+extract_ENSC <- function(text) {
+  # Usar expresiones regulares para encontrar todas las coincidencias de ENSC hasta "
+  matches <- gregexpr('"ENSC[^"]*"', text, perl = TRUE)
+  # Extraer las coincidencias del texto
+  extracted <- regmatches(text, matches)
+  # Unir las coincidencias en un vector
+  # Quitar las comillas finales de cada coincidencia
+  extracted_vector <- gsub('"$', '', extracted_vector)
+  return(extracted_vector)
+}
+
+count <- sum(grepl("ENSCJPG00005009035", boruta$ensembl_gene_id))
+position <- which(dalex$ensembl_gene_id == "ENSCJPG00005009035")
+count_nonzero_importance <- sum(rf$importance != 0)
 
 # -- relimp
 #library(relaimpo)
@@ -892,7 +1035,7 @@ imp_rpart <- function(formula, data, tune=F, verbose=T) {
 #
 # a random forest uses an ensemble learning method to combines the output 
 # of multiple decision trees to reach a single result and works for both, 
-# classification and regression (using a najority rule for classification
+# classification and regression (using a majority rule for classification
 # or the average for regression).
 #
 # Random forest can be very effective to find a set of predictors that best
@@ -1991,7 +2134,7 @@ if (test_coturnix) {
     # training. 
     # When we use it to "identify importance" we are dropping out a random variable 
     # in different iterations of the estimation, as such it is similar to a shallow
-    # neural network and so, in principle, we may expect imilar behavior. 
+    # neural network and so, in principle, we may expect similar behavior. 
     # It has been reported that for a single unit, in a shallow, one-layer, neural
     # network with a logistic sigmoidal function dropout works like a kind of
     # "geometric" ensemble averaging [REF ABOVE]. 
@@ -3195,15 +3338,15 @@ if (test_gallus2) {
 	# CA will produce a plot, we will save it
 	as.png(
 		CA(mtc),
-		'ca/mtc.ca.plot.png')
+		'ca/mtc.ca2.plot.png')
     mtc.ca <- CA(mtc),
 	print(mtc.ca)
 	# gives five dimensions (we have six levels)
 	n.dim <- dim(mtc.ca$eig)[[1]]
 	
 	row <- get_ca_row(mtc.ca)
-	as.png(corrplot(row$contrib, is.corr = FALSE), 
-	       'impgenes/mtc_ca_contrib.png')
+	as.png(corrplot(row$contrib, is.corr = FALSE, col = colorRampPalette(c("blue", "purple", "red"))(200), tl.cex=1.2), 
+	       'ca/mtc_ca3_contrib.png')
     
 	# get eigenvalues / variances
 	eig.val <- get_eigenvalue(mtc.ca)
@@ -3433,7 +3576,7 @@ if (test_gallus2) {
 	#	BLUE dots for classes/samples
 	as.png(
 		plot(mtc.vca),				# same as for CA
-		'ca/mtc.vca.plot.png')
+		'ca/mtc.vca2.plot.png')
 	#
 	# Gavin Simpson has written functions to organize the objects created 
 	# by vegan in a consistent manner for graphing via ggplot2.
@@ -3442,13 +3585,13 @@ if (test_gallus2) {
 	library(ggvegan)
 	as.png(
 		autoplot(mtc.vca),
-		'ca/mtc.vca.aplot.png')
+		'ca/mtc.vca2.aplot.png')
 	
 	# show sites names in the autoplot
 	as.png(autoplot(mtc.vca, geom = "point") +
   		   geom_text(data = site_scores_df, 
 		   aes(x = CA1, y = CA2, label = rownames(mtc)), 
-		   vjust = -0.5, hjust = 0.7), 'impgenes/mtc.vca.aplot.rnam.png')
+		   vjust = -0.5, hjust = 0.7), 'impgenes/mtc.vca2.aplot.rnam.png')
 
 	# fortify() creates a dataframe with all the data needed to be
 	# able to make ggplot2 plots
